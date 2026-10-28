@@ -17,6 +17,8 @@
 | `crossbeam-channel` | cs-core | Ограниченные очереди между потоками (§5.2 п.5) — подготовка к M1 | MIT/Apache-2.0 | `std::sync::mpsc` |
 | `uuid` (v4, serde) | cs-core | Идентификаторы сцен/источников | MIT/Apache-2.0 | счётчик (неуникален между коллекциями) |
 | `fluent-bundle`, `unic-langid` | cs-app | Локализация (§11.7) | MIT/Apache-2.0 | — (Fluent указан в ТЗ) |
+| `image` 0.25 (только `png`, `jpeg`, `webp`) | cs-capture | Декодирование источника «Изображение» (§6.5) | MIT/Apache-2.0 | WIC (системный, но громоздкий COM-API) |
+| `windows-numerics` | cs-gpu | Типы векторов для Direct2D (`DrawTextLayout`) — зависимость `windows` | MIT/Apache-2.0 | — |
 | `png` | cs-app | Запись/чтение PNG для скриншот-тестов | MIT/Apache-2.0 | `image` (тяжелее; понадобится в M1 для источника «Изображение») |
 
 **Не используется:** `tracing-appender` — нет ротации по размеру, нужной по §12.1 (ADR-0005).
