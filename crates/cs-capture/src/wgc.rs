@@ -57,6 +57,7 @@ pub struct WgcSource {
     texture: Option<GpuTexture>,
     state: SourceState,
     last_attempt: Option<Instant>,
+    frame_time: Option<cs_core::clock::Ticks>,
 }
 
 // SAFETY: объекты WGC созданы free-threaded (агильные), D3D-ресурсы — на свободно-поточном
@@ -76,7 +77,7 @@ impl WgcSource {
             Ok(d) => (Some(d), SourceState::Waiting),
             Err(e) => (None, SourceState::Error(format!("WGC недоступен: {e}"))),
         };
-        Self { target, cursor, device, session: None, texture: None, state, last_attempt: None }
+        Self { target, cursor, device, session: None, texture: None, state, last_attempt: None, frame_time: None }
     }
 
     pub fn monitor(gpu: &GpuDevice, index: u32, cursor: bool) -> Self {
@@ -136,6 +137,11 @@ impl WgcSource {
         }
         let Some(frame) = latest else { return Ok(()) };
         let content = frame.ContentSize()?;
+        // SystemRelativeTime — время композиции кадра в шкале QPC (100 нс).
+        if let Ok(t) = frame.SystemRelativeTime() {
+            let freq = i128::from(cs_core::clock::Ticks::frequency());
+            self.frame_time = Some(cs_core::clock::Ticks((i128::from(t.Duration) * freq / 10_000_000) as i64));
+        }
         let surface = frame.Surface()?;
         let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
         // SAFETY: поверхность кадра — текстура нашего устройства.
@@ -217,5 +223,9 @@ impl VideoSource for WgcSource {
 
     fn method(&self) -> CaptureMethod {
         CaptureMethod::Wgc
+    }
+
+    fn frame_time(&self) -> Option<cs_core::clock::Ticks> {
+        self.frame_time
     }
 }

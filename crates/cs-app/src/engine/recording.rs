@@ -297,6 +297,7 @@ impl Recording {
         let path = self.path.clone();
         let threads = std::mem::take(&mut self.threads);
         let (remux, delete_source) = (self.remux, self.delete_source);
+        tracing::info!("запись: пропущено энкодером {} кадров", self.stats.dropped_encoder.load(Ordering::Relaxed));
         let _ = std::thread::Builder::new().name("recording-finish".into()).spawn(move || {
             for t in threads {
                 let _ = t.join();

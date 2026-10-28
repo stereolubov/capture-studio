@@ -134,6 +134,8 @@ fn mixer_loop(sources: Vec<Arc<SourceShared>>, shared: Arc<Shared>) {
     let start_ticks = Ticks::now();
     let block = Duration::from_secs_f64(BLOCK_FRAMES as f64 / f64::from(SAMPLE_RATE));
     let freq = Ticks::frequency();
+    // Сглаженная задержка «захват → микшер», тики QPC.
+    let mut latency = 0.0f64;
     // Очередь каналов накапливается перед первым блоком: 20 мс запаса против рывков опроса.
     std::thread::sleep(Duration::from_millis(20));
     while !shared.stop.load(Ordering::Acquire) {
@@ -144,12 +146,31 @@ fn mixer_loop(sources: Vec<Arc<SourceShared>>, shared: Arc<Shared>) {
             }
         }
         let mut guards: Vec<_> = sources.iter().map(|s| s.queue.lock()).collect();
+        // Время захвата начала блока: конец очереди минус её длина (по каналу с известным временем).
+        let capture_time = guards.iter().zip(sources.iter()).find_map(|(q, s)| {
+            let end = s.queue_end_qpc.load(Ordering::Acquire);
+            (end != 0 && !q.is_empty()).then(|| end as i64 - (q.len() / 2) as i64 * 10_000_000 / i64::from(SAMPLE_RATE))
+        });
         let mut queues: Vec<&mut std::collections::VecDeque<f32>> = guards.iter_mut().map(|g| &mut **g).collect();
         let mixed = mixer.mix(&mut queues);
         drop(queues);
         drop(guards);
         *shared.meters.lock() = mixer.channels.iter().map(|c| c.meter).collect();
-        let pts = Ticks(start_ticks.0 + (mixed.index as i64) * freq * BLOCK_FRAMES as i64 / i64::from(SAMPLE_RATE));
+        let scheduled =
+            Ticks(start_ticks.0 + (mixed.index as i64) * freq * BLOCK_FRAMES as i64 / i64::from(SAMPLE_RATE));
+        // Метка — время захвата сэмплов, а не момент микширования (§5.2 п.4). Разница (задержка
+        // очереди) сглаживается, чтобы метки блоков шли равномерно.
+        if let Some(cap) = capture_time {
+            let cap_ticks = i128::from(cap) * i128::from(freq) / 10_000_000;
+            let lag = (i128::from(scheduled.0) - cap_ticks) as f64;
+            if (0.0..freq as f64 * 0.5).contains(&lag) {
+                latency = if latency == 0.0 { lag } else { latency * 0.98 + lag * 0.02 };
+            }
+        }
+        let pts = Ticks(scheduled.0 - latency as i64);
+        if mixed.index % 3000 == 500 {
+            tracing::info!("аудио: задержка «захват → микшер» {:.1} мс", latency * 1000.0 / freq as f64);
+        }
         let timed = Arc::new(TimedBlock { pts, block: mixed });
         shared.subscribers.lock().retain(|tx| tx.send(timed.clone()).is_ok());
 

@@ -103,6 +103,10 @@ mod imp {
         /// Текущее содержимое; `None` — кадров ещё нет.
         fn content(&self) -> Option<Content>;
         fn state(&self) -> SourceState;
+        /// Время захвата текущего кадра (мастер-часы), если источник его знает (WGC).
+        fn frame_time(&self) -> Option<cs_core::clock::Ticks> {
+            None
+        }
         /// Фактический метод захвата.
         fn method(&self) -> CaptureMethod {
             CaptureMethod::Static

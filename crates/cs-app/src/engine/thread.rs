@@ -177,6 +177,23 @@ fn build_state(
     }
 }
 
+/// Задержка «захват кадра → тик компоновщика» по самому свежему кадру видимого источника
+/// захвата (WGC знает время композиции кадра), если кадр получен не позже 25 мс назад (§5.2 п.4).
+fn frame_capture_lag(
+    sources: &HashMap<SourceId, Box<dyn VideoSource>>,
+    c: &SceneCollection,
+    now: cs_core::clock::Ticks,
+) -> Option<f64> {
+    let max_age = cs_core::clock::Ticks::frequency() / 40;
+    c.active()
+        .into_iter()
+        .flat_map(|s| s.items.iter().filter(|i| i.visible))
+        .filter_map(|i| sources.get(&i.source).and_then(|s| s.frame_time()))
+        .filter(|t| t.0 <= now.0 && now.0 - t.0 <= max_age)
+        .max()
+        .map(|t| (now.0 - t.0) as f64)
+}
+
 /// Элементы сцены для компоновщика (снизу вверх, только видимые и с кадром).
 fn draw_items(scene: &Scene, sources: &HashMap<SourceId, Box<dyn VideoSource>>) -> Vec<DrawItem> {
     let mut out = Vec::with_capacity(scene.items.len());
@@ -216,6 +233,8 @@ struct Worker {
     frames_in_second: u32,
     second_start: Instant,
     seconds: u64,
+    /// Сглаженная задержка «захват кадра → тик», тики QPC.
+    video_lag: f64,
     process: ProcessMonitor,
     audio: Option<AudioEngine>,
     recording: Option<Recording>,
@@ -330,6 +349,7 @@ impl Worker {
                 return;
             }
             Command::StopRecording => {
+                tracing::info!("запись: пропущено рендером {} кадров (за сеанс)", self.stats.dropped_render);
                 if let Some(r) = self.recording.take() {
                     r.stop(self.events.clone(), self.remux_progress.clone());
                 }
@@ -499,7 +519,13 @@ impl Worker {
         }
         if let Some(rec) = self.recording.as_mut() {
             let canvas = compositor.canvas();
-            rec.push_frame(&gpu, &canvas.srv, (canvas.width, canvas.height), cs_core::clock::Ticks::now());
+            let now = cs_core::clock::Ticks::now();
+            if let Some(lag) = frame_capture_lag(&self.sources, &self.editor.collection, now) {
+                // Сглаживание: метки остаются монотонными, а смещение — средней задержкой захвата.
+                self.video_lag = if self.video_lag == 0.0 { lag } else { self.video_lag * 0.95 + lag * 0.05 };
+            }
+            let at = cs_core::clock::Ticks(now.0 - self.video_lag as i64);
+            rec.push_frame(&gpu, &canvas.srv, (canvas.width, canvas.height), at);
         }
         if let Some(ms) = compositor.poll_gpu_time(&gpu) {
             // Скользящее среднее: метрика «Рендер» в статистике (§11.5).
@@ -674,6 +700,7 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         frames_in_second: 0,
         second_start: Instant::now(),
         seconds: 0,
+        video_lag: 0.0,
         process: ProcessMonitor::new(),
         audio: None,
         recording: None,
