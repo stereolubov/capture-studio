@@ -13,6 +13,7 @@ members = [
     "crates/cs-output",
     "crates/cs-hotkeys",
     "crates/cs-diag",
+    "tools/syncgen",
 ]
 
 [workspace.package]

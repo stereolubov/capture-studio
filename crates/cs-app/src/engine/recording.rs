@@ -71,6 +71,7 @@ pub struct Recording {
     /// Длительность кадра, 100 нс; метки видео ставятся на эту сетку.
     frame_duration: i64,
     last_frame_index: Option<i64>,
+    grid_phase: Option<i64>,
 }
 
 /// Номер кадра на сетке частоты: дрожание времени тика (±пара мс) не попадает в метки,
@@ -222,6 +223,7 @@ impl Recording {
             stats,
             frame_duration: vs.frame_duration(),
             last_frame_index: None,
+            grid_phase: None,
             pause,
             pause_started: None,
             remux: cfg.remux,
@@ -241,12 +243,15 @@ impl Recording {
             return;
         }
         let elapsed = to_100ns(at, self.start_ticks) - self.pause.total.load(Ordering::Acquire);
-        let index = grid_index(elapsed, self.frame_duration);
+        // Фаза сетки — по первому кадру: тики рендера идут с той же фазой, и округление
+        // не добавляет постоянной для сеанса ошибки до ±½ кадра.
+        let phase = *self.grid_phase.get_or_insert(elapsed.rem_euclid(self.frame_duration));
+        let index = grid_index(elapsed - phase, self.frame_duration);
         if self.last_frame_index.is_some_and(|last| index <= last) {
             return; // два тика попали в один слот сетки — второй не нужен
         }
         self.last_frame_index = Some(index);
-        let pts = index * self.frame_duration;
+        let pts = index * self.frame_duration + phase;
         let tex = self.converter.convert(gpu, canvas, canvas_size);
         if let Some(tx) = &self.video_tx
             && tx.try_send((tex, pts)).is_err()

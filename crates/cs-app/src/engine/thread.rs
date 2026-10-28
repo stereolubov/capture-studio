@@ -355,7 +355,11 @@ impl Worker {
                 return;
             }
             Command::StopRecording => {
-                tracing::info!("запись: пропущено рендером {} кадров (за сеанс)", self.stats.dropped_render);
+                tracing::info!(
+                    "запись: пропущено рендером {} кадров (за сеанс); задержка захвата видео {:.1} мс",
+                    self.stats.dropped_render,
+                    self.video_lag * 1000.0 / cs_core::clock::Ticks::frequency() as f64
+                );
                 if let Some(r) = self.recording.take() {
                     r.stop(self.events.clone(), self.remux_progress.clone());
                 }

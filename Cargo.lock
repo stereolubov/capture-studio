@@ -936,6 +936,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncgen"
+version = "0.1.0"
+dependencies = [
+ "cs-core",
+ "cs-gpu",
+ "windows",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"

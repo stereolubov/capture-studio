@@ -168,7 +168,7 @@ fn mixer_loop(sources: Vec<Arc<SourceShared>>, shared: Arc<Shared>) {
             }
         }
         let pts = Ticks(scheduled.0 - latency as i64);
-        if mixed.index % 3000 == 500 {
+        if mixed.index % 1000 == 500 {
             tracing::info!("аудио: задержка «захват → микшер» {:.1} мс", latency * 1000.0 / freq as f64);
         }
         let timed = Arc::new(TimedBlock { pts, block: mixed });
