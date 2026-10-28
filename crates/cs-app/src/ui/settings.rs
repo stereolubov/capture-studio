@@ -226,6 +226,8 @@ fn apply_changes(app: &mut App, d: &SettingsDialog) {
     app.settings = d.settings.clone();
     app.profile = d.profile.clone();
     app.send(Command::ApplyProfile(Box::new(d.profile.clone())));
+    let dir = app.recordings_dir();
+    app.send(Command::SetRecordingsDir(dir));
     let msg = match app.save_config() {
         Ok(()) => app.i18n.t("settings-saved"),
         Err(e) => app.i18n.t_args("settings-save-failed", &[("err", s(e))]),

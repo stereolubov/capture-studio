@@ -251,6 +251,8 @@ pub enum Command {
     Undo,
     Redo,
     SetTransition(Transition),
+    /// Папка записей (передаётся UI при старте и после изменения настроек).
+    SetRecordingsDir(std::path::PathBuf),
     StartStream,
     StopStream,
     StartRecording,

@@ -368,6 +368,7 @@ impl Engine for MockEngine {
                 }
             }
             Command::SetTransition(t) => st.transition = t,
+            Command::SetRecordingsDir(_) => {}
             // Редактирование сцен в моке не поддерживается: только визуальная оболочка.
             Command::AddSource { .. }
             | Command::UpdateSource { .. }

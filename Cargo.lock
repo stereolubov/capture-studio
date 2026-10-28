@@ -202,7 +202,10 @@ name = "cs-encode"
 version = "0.1.0"
 dependencies = [
  "cs-core",
+ "cs-gpu",
  "thiserror",
+ "tracing",
+ "windows",
 ]
 
 [[package]]

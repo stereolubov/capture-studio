@@ -98,6 +98,8 @@ fn run(args: args::Args) -> anyhow::Result<()> {
         })?)
     };
     let mut app = ui::App::new(engine, settings, profile, Some(dirs));
+    let rec_dir = app.recordings_dir();
+    app.send(cs_core::Command::SetRecordingsDir(rec_dir));
     if args.mock_ui {
         app.send(cs_core::Command::ApplyProfile(Box::new(app.profile.clone())));
     }

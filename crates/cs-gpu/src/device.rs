@@ -146,6 +146,34 @@ impl GpuDevice {
         }
     }
 
+    /// Чтение NV12-текстуры (Y, затем UV) — только для тестов (§4).
+    pub fn read_nv12(&self, tex: &ID3D11Texture2D) -> Result<Vec<u8>> {
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: staging-копия; плоскость UV следует за Y через RowPitch × Height.
+        unsafe {
+            tex.GetDesc(&mut desc);
+            let (w, h) = (desc.Width as usize, desc.Height as usize);
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            desc.MiscFlags = 0;
+            let mut staging = None;
+            self.device.CreateTexture2D(&desc, None, Some(&mut staging))?;
+            let staging = staging.ok_or_else(|| GpuError::NoDevice("staging".into()))?;
+            self.context.CopyResource(&staging, tex);
+            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+            self.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
+            let pitch = m.RowPitch as usize;
+            let base = m.pData.cast::<u8>();
+            let mut out = Vec::with_capacity(w * h * 3 / 2);
+            for y in 0..h + h / 2 {
+                out.extend_from_slice(std::slice::from_raw_parts(base.add(y * pitch), w));
+            }
+            self.context.Unmap(&staging, 0);
+            Ok(out)
+        }
+    }
+
     /// Захват immediate-контекста на время последовательности команд.
     pub fn lock(&self) -> parking_lot::MutexGuard<'_, ()> {
         self.lock.lock()

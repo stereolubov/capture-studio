@@ -6,6 +6,8 @@
 #[cfg(windows)]
 mod compositor;
 #[cfg(windows)]
+mod convert;
+#[cfg(windows)]
 mod device;
 #[cfg(windows)]
 mod egui_renderer;
@@ -16,6 +18,8 @@ mod text;
 
 #[cfg(windows)]
 pub use compositor::{Compositor, DrawItem, DrawSource};
+#[cfg(windows)]
+pub use convert::{ColorConverter, ColorParams};
 #[cfg(windows)]
 pub use device::{AdapterInfo, DriverKind, GpuDevice, GpuTexture};
 #[cfg(windows)]

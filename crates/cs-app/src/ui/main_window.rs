@@ -538,9 +538,6 @@ fn right_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
     {
         if st.record.is_active() {
             app.send(Command::StopRecording);
-        } else if st.live_engine {
-            let msg = app.i18n.t("record-later");
-            app.toast(msg);
         } else {
             app.send(Command::StartRecording);
         }

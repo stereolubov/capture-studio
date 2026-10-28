@@ -13,6 +13,9 @@ const SHADERS: &[(&str, &str, &str, &str)] = &[
     ("egui.hlsl", "ps_main", "ps_4_0", "egui_ps.cso"),
     ("compose.hlsl", "vs_main", "vs_4_0", "compose_vs.cso"),
     ("compose.hlsl", "ps_main", "ps_4_0", "compose_ps.cso"),
+    ("convert.hlsl", "vs_main", "vs_4_0", "convert_vs.cso"),
+    ("convert.hlsl", "ps_y", "ps_4_0", "convert_y.cso"),
+    ("convert.hlsl", "ps_uv", "ps_4_0", "convert_uv.cso"),
 ];
 
 fn find_fxc() -> Option<PathBuf> {

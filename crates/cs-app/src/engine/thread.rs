@@ -1,6 +1,7 @@
 //! Рендер-поток (§5.4): тик по высокоточному таймеру с частотой холста, команды, источники,
 //! компоновка, метрики, публикация снимка, автосохранение коллекции через 1 с после изменения.
 
+use super::recording::{self, Recording, RecordingConfig};
 use super::scene_ops::{Effect, SceneEditor};
 use super::{EngineConfig, Shared};
 use crossbeam_channel::{Receiver, Sender};
@@ -199,6 +200,8 @@ struct Worker {
     seconds: u64,
     process: ProcessMonitor,
     audio: Option<AudioEngine>,
+    recording: Option<Recording>,
+    recordings_dir: PathBuf,
     /// Режим мониторинга по каналам (воспроизведение — позже в M2).
     monitor: Vec<MonitorMode>,
 }
@@ -297,7 +300,21 @@ impl Worker {
                 }
                 return;
             }
-            Command::StartStream | Command::StopStream | Command::StartRecording | Command::StopRecording => {
+            Command::SetRecordingsDir(dir) => {
+                self.recordings_dir = dir;
+                return;
+            }
+            Command::StartRecording => {
+                self.start_recording();
+                return;
+            }
+            Command::StopRecording => {
+                if let Some(r) = self.recording.take() {
+                    r.stop(self.events.clone());
+                }
+                return;
+            }
+            Command::StartStream | Command::StopStream => {
                 // Вывод — этапы M2/M3; UI сообщает об этом сам.
                 return;
             }
@@ -322,6 +339,50 @@ impl Worker {
         }
         if fx.changed {
             self.dirty_since = Some(Instant::now());
+        }
+    }
+
+    fn start_recording(&mut self) {
+        if self.recording.is_some() {
+            return;
+        }
+        use cs_core::config::profile::{ColorRange, ColorSpace, RateControl as Rc};
+        let p = &self.profile;
+        let (ow, oh) = p.video.output.unwrap_or(self.canvas);
+        let video = cs_encode::VideoSettings {
+            width: ow & !1,
+            height: oh & !1,
+            fps_num: p.video.fps.0,
+            fps_den: p.video.fps.1.max(1),
+            bitrate_kbps: p.output.bitrate_kbps,
+            keyframe_interval_s: p.output.keyframe_interval_s,
+            rate_control: match p.output.rate_control {
+                Rc::Cbr => cs_encode::RateControl::Cbr,
+                Rc::Vbr => cs_encode::RateControl::Vbr,
+                Rc::Cqp => cs_encode::RateControl::Cqp(p.output.cq_level),
+            },
+        };
+        let cfg = RecordingConfig {
+            path: self.recordings_dir.join(recording::file_name("mkv")),
+            video,
+            color: cs_gpu::ColorParams {
+                bt601: p.video.color_space == ColorSpace::Bt601,
+                full_range: p.video.color_range == ColorRange::Full,
+            },
+            audio_kbps: p.output.audio_bitrate_kbps,
+            tracks: p.output.record_tracks,
+        };
+        let audio = self.audio.as_ref().map(|a| a.subscribe());
+        match Recording::start(&self.gpu, cfg, audio, self.events.clone()) {
+            Ok(r) => {
+                tracing::info!("запись: {}", r.path.display());
+                self.recording = Some(r);
+                let _ = self.events.send(Event::RecordingStarted);
+            }
+            Err(e) => {
+                tracing::error!("запись не начата: {e:#}");
+                let _ = self.events.send(Event::Error(format!("запись не начата: {e:#}")));
+            }
         }
     }
 
@@ -376,6 +437,10 @@ impl Worker {
         if let Err(e) = compositor.compose(&gpu, &current, previous.as_ref().map(|(v, t)| (v.as_slice(), *t))) {
             tracing::error!("компоновка: {e}");
         }
+        if let Some(rec) = self.recording.as_mut() {
+            let canvas = compositor.canvas();
+            rec.push_frame(&gpu, &canvas.srv, (canvas.width, canvas.height), cs_core::clock::Ticks::now());
+        }
         if let Some(ms) = compositor.poll_gpu_time(&gpu) {
             // Скользящее среднее: метрика «Рендер» в статистике (§11.5).
             self.stats.render_ms = if self.stats.render_ms == 0.0 { ms } else { self.stats.render_ms * 0.9 + ms * 0.1 };
@@ -405,6 +470,11 @@ impl Worker {
             self.editor.history.can_redo(),
         );
         state.audio = audio_channels(self.audio.as_ref(), &self.monitor);
+        if let Some(r) = &self.recording {
+            state.record = OutputStatus::Live;
+            state.record_elapsed_secs = r.started.elapsed().as_secs();
+            state.stats.dropped_encoder = r.stats.dropped_encoder.load(std::sync::atomic::Ordering::Relaxed);
+        }
         *self.shared.snapshot.lock() = Arc::new(state);
     }
 
@@ -544,6 +614,12 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         seconds: 0,
         process: ProcessMonitor::new(),
         audio: None,
+        recording: None,
+        recordings_dir: std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join("Videos")
+            .join("Capture Studio"),
         monitor: Vec::new(),
     };
     w.audio = start_audio(&w.profile);
@@ -586,6 +662,10 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         } else if next > now {
             timer.sleep(next - now);
         }
+    }
+    if let Some(r) = w.recording.take() {
+        // Выход во время записи: файл финализируется до завершения процесса (§15).
+        r.stop_blocking();
     }
     if w.dirty_since.is_some() {
         w.save_now(false);

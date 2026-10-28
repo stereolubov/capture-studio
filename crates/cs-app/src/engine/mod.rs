@@ -5,6 +5,7 @@
 //! Превью — текстура холста на том же D3D11-устройстве (без копий), передаётся окну через
 //! [`EngineHandle::preview_srv`].
 
+mod recording;
 mod scene_ops;
 mod thread;
 
