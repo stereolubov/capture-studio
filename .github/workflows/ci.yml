@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Версия и компоненты берутся из rust-toolchain.toml.
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Формат
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Тесты (включая скриншот-тесты на WARP)
+        run: cargo test --workspace
+      - name: Хук x86 и x64
+        run: |
+          cargo build --profile release-hook -p cs-hook -p cs-inject --target i686-pc-windows-msvc
+          cargo build --profile release-hook -p cs-hook -p cs-inject --target x86_64-pc-windows-msvc
+      - name: Release-сборка и бюджет размера exe (§4, M0 ≤ 10 МБ)
+        shell: pwsh
+        run: |
+          cargo build --release -p cs-app
+          $size = (Get-Item target/release/capture-studio.exe).Length
+          "capture-studio.exe: {0:N2} МБ" -f ($size / 1MB)
+          if ($size -gt 10MB) { throw "Превышен бюджет размера exe" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capture-studio
+          path: target/release/capture-studio.exe
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

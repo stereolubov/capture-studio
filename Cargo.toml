@@ -1,0 +1,77 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/cs-app",
+    "crates/cs-core",
+    "crates/cs-gpu",
+    "crates/cs-capture",
+    "crates/cs-hook",
+    "crates/cs-hook-proto",
+    "crates/cs-inject",
+    "crates/cs-audio",
+    "crates/cs-encode",
+    "crates/cs-output",
+    "crates/cs-hotkeys",
+    "crates/cs-diag",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "LicenseRef-Proprietary"
+publish = false
+
+[workspace.dependencies]
+cs-core = { path = "crates/cs-core" }
+cs-gpu = { path = "crates/cs-gpu" }
+cs-capture = { path = "crates/cs-capture" }
+cs-hook-proto = { path = "crates/cs-hook-proto" }
+cs-audio = { path = "crates/cs-audio" }
+cs-encode = { path = "crates/cs-encode" }
+cs-output = { path = "crates/cs-output" }
+cs-hotkeys = { path = "crates/cs-hotkeys" }
+cs-diag = { path = "crates/cs-diag" }
+
+egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
+parking_lot = "0.13"
+crossbeam-channel = "0.5"
+uuid = { version = "1", features = ["v4", "serde"] }
+fluent-bundle = "0.16"
+unic-langid = "0.9"
+png = "0.18"
+windows = "0.62"
+windows-sys = "0.61"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Хук не должен использовать panic=abort (§18.1): unwinding ловится catch_unwind.
+# panic-стратегия задаётся на уровне профиля, поэтому для cs-hook используется
+# отдельный профиль `release-hook` (см. xtask/ADR-0004).
+[profile.release-hook]
+inherits = "release"
+panic = "unwind"
+lto = "fat"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

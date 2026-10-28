@@ -1,0 +1,17 @@
+[package]
+name = "cs-hook"
+description = "DLL захвата игры (внедряется в процесс игры). x86 + x64"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+cs-hook-proto.workspace = true

@@ -1,0 +1,221 @@
+//! Снимок состояния приложения, команды и события (§5.2 п.6).
+//!
+//! UI получает `Arc<AppState>` (дешёвый снимок), команды отправляет через [`Command`],
+//! а значимые происшествия (для тостов и лога) приходят как [`Event`].
+
+use crate::model::{GameCaptureMethod, SceneId, SourceId};
+
+/// Состояние вывода — конечный автомат §10.3.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutputStatus {
+    Idle,
+    Starting,
+    Live,
+    Reconnecting { attempt: u32, max: u32 },
+    Stopping,
+    Error(String),
+}
+
+impl OutputStatus {
+    /// Вывод активен (идёт эфир/запись или переподключение).
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Live | Self::Reconnecting { .. })
+    }
+
+    /// Переходное состояние: кнопка управления должна быть неактивна.
+    pub fn is_transitional(&self) -> bool {
+        matches!(self, Self::Starting | Self::Stopping)
+    }
+}
+
+/// Сцена в списке.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneView {
+    pub id: SceneId,
+    pub name: String,
+    pub hotkey: Option<String>,
+}
+
+/// Данные для мета-строки источника (§11.2). Текст собирает UI с учётом локали.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SourceMeta {
+    Game {
+        exe: String,
+        width: u32,
+        height: u32,
+        /// Фактический метод захвата, если уже выбран (`хук D3D12`, `WGC`).
+        method: Option<String>,
+        mode: GameCaptureMethod,
+    },
+    Window {
+        exe: String,
+        width: u32,
+        height: u32,
+    },
+    Monitor {
+        index: u32,
+        width: u32,
+        height: u32,
+    },
+    Camera {
+        device: String,
+        mode: String,
+    },
+    Browser {
+        width: u32,
+        height: u32,
+    },
+    Image {
+        format: String,
+        width: u32,
+        height: u32,
+    },
+    Color {
+        width: u32,
+        height: u32,
+    },
+    Text,
+}
+
+/// Источник активной сцены.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceView {
+    pub id: SourceId,
+    pub name: String,
+    pub meta: SourceMeta,
+    pub visible: bool,
+    pub locked: bool,
+    /// Ошибка источника — показывается в мета-строке цветом `warn`.
+    pub error: Option<String>,
+}
+
+/// Режим мониторинга канала (§8.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MonitorMode {
+    #[default]
+    Off,
+    MonitorOnly,
+    MonitorAndOutput,
+}
+
+/// Аудиоканал микшера.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioChannel {
+    pub name: String,
+    /// Положение фейдера, дБ (−∞ = `f32::NEG_INFINITY`).
+    pub fader_db: f32,
+    pub muted: bool,
+    pub monitor: MonitorMode,
+    /// Пиковые уровни L/R, dBFS.
+    pub peak: [f32; 2],
+    /// RMS-уровни L/R, dBFS.
+    pub rms: [f32; 2],
+    /// Удерживаемый пик (1.5 с), dBFS.
+    pub peak_hold: [f32; 2],
+}
+
+/// Метрики для статус-бара и окна статистики (§14.1).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Stats {
+    pub cpu_percent: f32,
+    pub gpu_percent: f32,
+    pub ram_mb: f32,
+    pub fps: f32,
+    pub target_fps: f32,
+    pub bitrate_kbps: f32,
+    pub dropped_frames: u64,
+    pub total_frames: u64,
+    pub render_ms: f32,
+    pub rtt_ms: f32,
+    pub transferred_bytes: u64,
+    /// Пропуски по причинам: рендер / энкодер / сеть.
+    pub dropped_render: u64,
+    pub dropped_encoder: u64,
+    pub dropped_network: u64,
+    pub encoder_load_percent: f32,
+    /// Средний битрейт по 10-секундным интервалам, последние 10 минут (≤ 60 значений).
+    pub bitrate_history: Vec<f32>,
+}
+
+impl Stats {
+    /// Доля потерянных кадров, %.
+    pub fn dropped_percent(&self) -> f32 {
+        if self.total_frames == 0 { 0.0 } else { self.dropped_frames as f32 * 100.0 / self.total_frames as f32 }
+    }
+}
+
+/// Краткая сводка настроек вывода для строки под превью.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputSummary {
+    pub canvas: (u32, u32),
+    pub output: (u32, u32),
+    pub fps: f32,
+    pub encoder: String,
+    pub bitrate_kbps: u32,
+    pub rate_control: String,
+}
+
+/// Полный снимок состояния для UI.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppState {
+    pub scenes: Vec<SceneView>,
+    pub active_scene: usize,
+    pub sources: Vec<SourceView>,
+    pub audio: Vec<AudioChannel>,
+    pub stream: OutputStatus,
+    pub stream_elapsed_secs: u64,
+    pub record: OutputStatus,
+    pub record_elapsed_secs: u64,
+    pub record_paused: bool,
+    pub stats: Stats,
+    pub output: OutputSummary,
+    pub preview_enabled: bool,
+}
+
+/// Команды от UI (и горячих клавиш) к движку.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Command {
+    SelectScene(usize),
+    AddScene(String),
+    RemoveScene(usize),
+    DuplicateScene(usize),
+    RenameScene(usize, String),
+    ToggleSourceVisible(usize),
+    StartStream,
+    StopStream,
+    StartRecording,
+    StopRecording,
+    SetFader {
+        channel: usize,
+        db: f32,
+    },
+    ToggleMute(usize),
+    SetMonitor {
+        channel: usize,
+        mode: MonitorMode,
+    },
+    SetPreviewEnabled(bool),
+    /// Применить профиль (вывод, кодирование, видео). Движок перезапускает затронутые части.
+    ApplyProfile(Box<crate::config::Profile>),
+}
+
+/// Важные события движка: показываются тостами и пишутся в лог.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    StreamStarted,
+    StreamStopped,
+    StreamReconnecting { attempt: u32, max: u32 },
+    RecordingStarted,
+    RecordingStopped { path: String },
+    RemuxFinished { path: String },
+    Error(String),
+}
+
+/// Интерфейс движка, которым пользуется UI. Реальный движок (M1+) и мок
+/// (`--mock-ui`) реализуют его одинаково.
+pub trait Engine {
+    fn send(&mut self, cmd: Command);
+    /// Продвигает внутреннее время (для мока) и возвращает новые события.
+    fn poll(&mut self) -> Vec<Event>;
+    fn state(&self) -> &AppState;
+}

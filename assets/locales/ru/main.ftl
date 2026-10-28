@@ -1,0 +1,229 @@
+## Заголовок и меню
+app-name = Capture Studio
+menu-file = Файл
+menu-scenes = Сцены
+menu-view = Вид
+menu-settings = Настройки
+menu-file-profiles = Профили
+menu-file-collections = Коллекции сцен
+menu-file-open-recordings = Открыть папку записей
+menu-file-exit = Выход
+menu-scenes-add = Добавить
+menu-scenes-duplicate = Дублировать
+menu-scenes-remove = Удалить
+menu-scenes-transition = Переход
+transition-cut = Срез
+transition-fade = Затухание
+menu-view-theme = Тема
+menu-view-mini = Мини-режим
+menu-view-mixer = Микшер
+menu-view-stats = Статистика
+menu-view-hide-preview = Скрыть превью
+menu-view-show-preview = Показать превью
+menu-soon = скоро
+window-minimize = Свернуть
+window-maximize = Развернуть
+window-restore = Восстановить
+window-close = Закрыть
+
+indicator-live = LIVE
+indicator-rec = REC
+
+## Левая панель
+section-scenes = СЦЕНЫ
+section-sources = ИСТОЧНИКИ
+section-audio = АУДИО
+scene-new-name = Сцена { $n }
+scene-rename = Переименовать
+source-visible = Скрыть источник
+source-hidden = Показать источник
+meta-browser = Браузер · { $w }×{ $h }
+meta-monitor = Экран { $n } · { $w }×{ $h }
+meta-color = Цвет · { $w }×{ $h }
+meta-text = Текст
+meta-method-hook = хук { $api }
+meta-method-wgc = WGC
+meta-minimized = окно свёрнуто
+add-source-soon = Добавление источников появится в M1
+
+## Превью
+preview-program = PROGRAM
+preview-placeholder = превью сцены · { $w }×{ $h } · { $fps } fps
+param-canvas = Холст { $w }×{ $h }
+param-output = Вывод { $w }×{ $h }
+param-bitrate = { $kbps } kbps { $rc }
+
+## Кнопки управления
+btn-start-stream = Начать трансляцию
+btn-stop-stream = Остановить трансляцию
+btn-connecting = Подключение…
+btn-confirm-stop = Нажмите ещё раз для остановки
+btn-stopping = Остановка…
+btn-start-record = Начать запись
+btn-stop-record = Остановить запись
+
+## Статус-бар
+status-cpu = CPU
+status-gpu = GPU
+status-fps = FPS
+status-bitrate = Битрейт
+status-drops = Потери
+status-rec = REC
+status-connection-ok = ● Соединение стабильно
+status-reconnecting = ● Переподключение ({ $n }/{ $max })
+status-no-connection = ● Нет соединения
+unit-kbps = kbps
+
+## Настройки (1c)
+settings-tab-general = Общие
+settings-tab-stream = Трансляция
+settings-tab-output = Вывод
+settings-tab-audio = Аудио
+settings-tab-video = Видео
+settings-tab-hotkeys = Горячие клавиши
+settings-cancel = Отмена
+settings-apply = Применить
+settings-locked-live = Остановите трансляцию, чтобы изменить
+settings-advanced = Расширенные
+settings-estimate = Оценка: ~{ $gb } ГБ/час записи · нагрузка GPU ≈ { $gpu }%
+settings-estimate-cq = Оценка: ≈{ $gb } ГБ/час записи · нагрузка GPU ≈ { $gpu }%
+settings-saved = Настройки сохранены
+settings-save-failed = Не удалось сохранить настройки: { $err }
+
+field-encoder = Кодировщик
+field-rate-control = Управление битрейтом
+field-bitrate = Битрейт
+field-keyint = Интервал ключ. кадров
+field-preset = Пресет
+field-record-format = Формат записи
+field-profile = Профиль
+field-bframes = B-кадры
+field-lookahead = Lookahead
+field-separate-encoder = Отдельный энкодер записи
+field-tracks = Дорожки записи
+unit-seconds = с
+unit-nits = нит
+
+encoder-auto = Авто (лучший доступный)
+encoder-nvenc = NVIDIA NVENC H.264
+encoder-amf = AMD AMF H.264
+encoder-qsv = Intel QSV H.264
+encoder-mf = Media Foundation H.264
+encoder-software = Программный H.264 (OpenH264)
+preset-1 = P1 · Самый быстрый
+preset-2 = P2 · Очень быстрый
+preset-3 = P3 · Быстрый
+preset-4 = P4 · Средний
+preset-5 = P5 · Медленный
+preset-6 = P6 · Очень медленный
+preset-7 = P7 · Самый медленный
+record-mkv-remux = MKV → авто-ремукс MP4
+record-mkv = MKV
+record-mp4 = MP4
+record-fmp4 = Фрагментированный MP4
+
+field-language = Язык
+field-theme = Тема
+field-start-minimized = Запуск свёрнутым
+field-confirm-stop = Подтверждать остановку
+field-check-updates = Проверять обновления
+field-priority = Приоритет процесса
+field-recordings-dir = Папка записей
+lang-ru = Русский
+lang-en = English
+theme-dark = Тёмная
+theme-light = Светлая
+theme-system = Как в системе
+priority-normal = Обычный
+priority-above-normal = Выше обычного
+priority-high = Высокий
+yes = Да
+no = Нет
+default-recordings-dir = Видео\Capture Studio
+
+field-service = Сервис
+field-server = Сервер
+field-stream-key = Ключ трансляции
+field-reconnect = Переподключение
+field-dynamic-bitrate = Динамический битрейт
+service-custom = Пользовательский
+server-auto = Авто (ближайший)
+key-show = Показать
+key-hide = Скрыть
+key-not-set = не задан
+
+field-sample-rate = Частота дискретизации
+field-desktop-device = Звук рабочего стола
+field-mic-device = Микрофон
+field-monitor-device = Мониторинг
+device-default = По умолчанию
+
+field-canvas = Разрешение холста
+field-output-res = Выходное разрешение
+field-scale-filter = Фильтр масштабирования
+field-fps = Частота кадров
+field-color-space = Цветовое пространство
+field-color-range = Диапазон
+field-sdr-white = Яркость белого SDR
+filter-bilinear = Билинейный
+filter-bicubic = Бикубический
+filter-lanczos = Lanczos
+range-limited = Ограниченный
+range-full = Полный
+res-monitor = По монитору
+
+hotkeys-search = Поиск…
+hotkeys-reset = Сбросить
+hotkeys-press = Нажмите сочетание…
+hotkeys-none = —
+hotkeys-conflict = Сочетание уже назначено: { $action }
+hotkey-action-scene = Сцена { $n }
+hotkey-action-stream = Начать/остановить трансляцию
+hotkey-action-record = Начать/остановить запись
+hotkey-action-pause = Пауза записи
+hotkey-action-mute-mic = Выключить микрофон
+hotkey-action-ptt = Push-to-talk
+hotkey-action-mini = Мини-режим
+
+## Микшер (1d)
+mixer-title = МИКШЕР
+mixer-mute = M
+mixer-filters = Фильтры
+mixer-monitor = Мониторинг
+mixer-monitor-off = Выкл.
+mixer-monitor-only = Только мониторинг
+mixer-monitor-output = Мониторинг и вывод
+mixer-tracks = Дорожки
+mixer-filters-soon = Цепочка фильтров появится в M2
+
+## Статистика (1e)
+stats-title = СТАТИСТИКА
+stats-uptime = Время в эфире
+stats-bitrate = Битрейт
+stats-dropped = Пропущено кадров
+stats-render = Рендер
+stats-rtt = Задержка сети
+stats-transferred = Передано
+stats-chart = БИТРЕЙТ · 10 МИН
+stats-chart-tip = { $kbps } kbps · −{ $ago }
+stats-details = Подробнее
+stats-drops-breakdown = Пропуски: рендер { $r } · энкодер { $e } · сеть { $n }
+stats-encoder-load = Загрузка энкодера { $p }%
+stats-copy = Копировать отчёт
+stats-copied = Отчёт скопирован в буфер обмена
+
+## Мини-режим (1f)
+mini-expand = Вернуться в полное окно
+mini-close = Закрыть мини-режим
+mini-stop-hint = Двойной клик или удержание — остановить трансляцию
+mini-drop = { $p }% drop
+
+## Тосты
+toast-stream-started = Трансляция началась
+toast-stream-stopped = Трансляция остановлена
+toast-reconnecting = Переподключение ({ $n }/{ $max })…
+toast-record-started = Запись началась
+toast-record-stopped = Запись сохранена: { $path }
+toast-remux-done = Ремукс готов: { $path }
+toast-error = Ошибка: { $msg }
+toast-tray-soon = Работа в трее появится в M3 — окно свёрнуто
