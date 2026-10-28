@@ -7,6 +7,8 @@
 pub mod clock;
 pub mod config;
 pub mod estimate;
+pub mod geometry;
+pub mod history;
 pub mod mock;
 pub mod model;
 pub mod state;

@@ -8,6 +8,23 @@ pub fn source_meta(i18n: &I18n, src: &SourceView) -> String {
     if let Some(err) = &src.error {
         return err.clone();
     }
+    let mut out = meta_base(i18n, src);
+    if src.waiting {
+        out = format!("{out} · {}", i18n.t("meta-waiting"));
+    } else if src.minimized {
+        out = format!("{out} · {}", i18n.t("meta-minimized"));
+    }
+    out
+}
+
+fn with_method(base: String, method: &Option<String>) -> String {
+    match method {
+        Some(m) if !m.is_empty() => format!("{base} · {m}"),
+        _ => base,
+    }
+}
+
+fn meta_base(i18n: &I18n, src: &SourceView) -> String {
     match &src.meta {
         SourceMeta::Game { exe, width, height, method, .. } => {
             let mut out = format!("{exe} · {width}×{height}");
@@ -17,9 +34,9 @@ pub fn source_meta(i18n: &I18n, src: &SourceView) -> String {
             }
             out
         }
-        SourceMeta::Window { exe, width, height } => format!("{exe} · {width}×{height}"),
-        SourceMeta::Monitor { index, width, height } => {
-            i18n.t_args("meta-monitor", &[("n", s(index + 1)), ("w", s(width)), ("h", s(height))])
+        SourceMeta::Window { exe, width, height, method } => with_method(format!("{exe} · {width}×{height}"), method),
+        SourceMeta::Monitor { index, width, height, method } => {
+            with_method(i18n.t_args("meta-monitor", &[("n", s(index + 1)), ("w", s(width)), ("h", s(height))]), method)
         }
         SourceMeta::Camera { device, mode } => format!("{device} · {mode}"),
         SourceMeta::Browser { width, height } => i18n.t_args("meta-browser", &[("w", s(width)), ("h", s(height))]),

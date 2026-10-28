@@ -58,6 +58,7 @@ pub fn window(app: &mut App, ctx: &Context, st: &mut StatsUi, screen: Rect) -> b
     let default = pos2(screen.center().x - WIDTH / 2.0, screen.bottom() - 44.0 - size.y - 16.0);
     let mut keep = true;
     let area = Area::new(Id::unique("stats"))
+        .fade_in(false)
         .order(Order::Middle)
         .default_pos(st.pos.unwrap_or(default))
         .constrain_to(screen)

@@ -17,6 +17,20 @@ pub enum EncoderKind {
     Software,
 }
 
+impl EncoderKind {
+    /// Короткое имя для строки параметров под превью.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Авто",
+            Self::Nvenc => "NVENC H.264",
+            Self::Amf => "AMF H.264",
+            Self::Qsv => "QSV H.264",
+            Self::MediaFoundation => "MF H.264",
+            Self::Software => "OpenH264",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Codec {
@@ -33,6 +47,16 @@ pub enum RateControl {
     Cbr,
     Vbr,
     Cqp,
+}
+
+impl RateControl {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cbr => "CBR",
+            Self::Vbr => "VBR",
+            Self::Cqp => "CQP",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

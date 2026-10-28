@@ -15,6 +15,7 @@ use crate::ui::{App, Chrome, Mode, WindowCommand, WindowInfo};
 use cs_gpu::{EguiRenderer, GpuDevice, WindowSurface};
 use egui::{CursorIcon, Pos2, Rect, ViewportId, pos2, vec2};
 use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::*;
@@ -55,11 +56,15 @@ struct Shared {
     system_dark: Cell<bool>,
     tracking: Cell<bool>,
     buttons_down: Cell<u8>,
+    /// Сработавшие глобальные горячие клавиши (id), обрабатываются в кадре.
+    hotkeys: RefCell<Vec<i32>>,
 }
 
 /// Всё, что нужно для рендера кадра.
 struct Runtime {
-    gpu: GpuDevice,
+    gpu: Arc<GpuDevice>,
+    /// Зарегистрированная в egui текстура превью: (поколение, id).
+    preview: Option<(u64, egui::TextureId)>,
     renderer: EguiRenderer,
     surface: WindowSurface,
     ctx: egui::Context,
@@ -68,6 +73,8 @@ struct Runtime {
     next_repaint: Option<Instant>,
     main_placement: Option<WINDOWPLACEMENT>,
     first_frame_logged: bool,
+    /// Зарегистрированные глобальные сочетания сцен (§13): id → сочетание.
+    registered_hotkeys: std::collections::BTreeMap<i32, String>,
 }
 
 pub struct Host {
@@ -147,6 +154,27 @@ impl Host {
             );
         }
 
+        // Глобальные горячие клавиши сцен: id = номер сцены (с 1).
+        for id in std::mem::take(&mut *self.shared.hotkeys.borrow_mut()) {
+            if id >= 1 {
+                rt.app.send(cs_core::Command::SelectScene((id - 1) as usize));
+            }
+        }
+        sync_hotkeys(hwnd, rt);
+
+        // Текстура превью движка: регистрируем в egui (без копий) при смене поколения.
+        if let Some((generation, handle)) = rt.app.engine.preview_handle()
+            && rt.preview.is_none_or(|(g, _)| g != generation)
+            && let Ok(srv) = handle.downcast::<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView>()
+        {
+            let size = rt.app.engine.state().preview.map_or([1, 1], |p| [p.width as usize, p.height as usize]);
+            let id = rt.renderer.register_native_texture(*srv, size);
+            if let Some((_, old)) = rt.preview.replace((generation, id)) {
+                rt.renderer.unregister_native_texture(old);
+            }
+            rt.app.preview_texture = Some(id);
+        }
+
         let info = self.info();
         let app = &mut rt.app;
         let mut out = rt.ctx.run_pass(raw, |ctx| app.frame(ctx, info));
@@ -170,14 +198,18 @@ impl Host {
             [f32::from(bg.r()) / 255.0, f32::from(bg.g()) / 255.0, f32::from(bg.b()) / 255.0, 1.0]
         };
         let delta = &mut out.textures_delta;
+        // Команды UI записываются под блокировкой устройства, а Present (ожидание vsync до 16 мс)
+        // — уже без неё, иначе рендер-поток компоновщика пропускал бы кадры (§5.2 п.3).
+        let gpu_lock = rt.gpu.lock();
         let result = (|| -> cs_gpu::Result<()> {
             rt.renderer.update_textures(delta)?;
             let rtv = rt.surface.begin(&rt.gpu, clear)?;
             rt.renderer.render(&rtv, rt.surface.size(), out.pixels_per_point, &primitives)?;
-            rt.surface.present(true)?;
             rt.renderer.free_textures(delta);
             Ok(())
         })();
+        drop(gpu_lock);
+        let result = result.and_then(|()| rt.surface.present(true));
         out.textures_delta.clear();
         if let Err(e) = result {
             // Потеря устройства обрабатывается полноценно в M5 (§15); пока — лог.
@@ -370,6 +402,39 @@ impl Host {
     }
 }
 
+/// Регистрирует глобальные сочетания `scene.N` из профиля, если они изменились.
+fn sync_hotkeys(hwnd: HWND, rt: &mut Runtime) {
+    let wanted: std::collections::BTreeMap<i32, String> = rt
+        .app
+        .profile
+        .hotkeys
+        .iter()
+        .filter_map(|(action, combo)| {
+            let n: i32 = action.strip_prefix("scene.")?.parse().ok()?;
+            (1..=9).contains(&n).then(|| (n, combo.clone()))
+        })
+        .collect();
+    if wanted == rt.registered_hotkeys {
+        return;
+    }
+    for id in rt.registered_hotkeys.keys() {
+        cs_hotkeys::unregister(hwnd.0 as isize, *id);
+    }
+    rt.registered_hotkeys.clear();
+    for (id, combo) in &wanted {
+        let result = combo
+            .parse::<cs_hotkeys::Hotkey>()
+            .map_err(|_| ())
+            .and_then(|hk| cs_hotkeys::register(hwnd.0 as isize, *id, &hk).map_err(|_| ()));
+        if result.is_err() {
+            tracing::warn!("горячая клавиша {combo} не зарегистрирована");
+            let msg = rt.app.i18n.t_args("hotkey-register-failed", &[("key", crate::i18n::s(combo))]);
+            rt.app.toast(msg);
+        }
+    }
+    rt.registered_hotkeys = wanted;
+}
+
 fn set_corner(hwnd: HWND, round: bool) {
     let pref = if round { DWMWCP_ROUND } else { DWMWCP_DONOTROUND };
     // SAFETY: атрибут DWM с корректным размером значения; ошибка (Win10) игнорируется.
@@ -517,7 +582,11 @@ unsafe fn handle(host: &Host, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             }
             WM_MOUSELEAVE => {
                 sh.tracking.set(false);
-                host.push(egui::Event::PointerGone);
+                // Пока кнопка зажата, мышь захвачена окном (SetCapture): уход курсора за край
+                // не должен прерывать перетаскивание.
+                if sh.buttons_down.get() == 0 {
+                    host.push(egui::Event::PointerGone);
+                }
                 Some(LRESULT(0))
             }
             WM_LBUTTONDOWN => button(egui::PointerButton::Primary, true),
@@ -590,6 +659,7 @@ unsafe fn handle(host: &Host, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
             }
             WM_DPICHANGED => {
                 sh.ppp.set(f32::from(hiword(wparam.0) as u16) / 96.0);
+                tracing::debug!("WM_DPICHANGED: {}", sh.ppp.get());
                 let r = &*(lparam.0 as *const RECT);
                 let _ = SetWindowPos(
                     hwnd,
@@ -634,6 +704,11 @@ unsafe fn handle(host: &Host, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPAR
                 Some(LRESULT(0))
             }
             WM_ERASEBKGND => Some(LRESULT(1)),
+            WM_HOTKEY => {
+                sh.hotkeys.borrow_mut().push(wparam.0 as i32);
+                sh.repaint.set(true);
+                Some(LRESULT(0))
+            }
             WM_CLOSE | WM_ENDSESSION => {
                 host.save_on_exit();
                 let _ = DestroyWindow(hwnd);
@@ -672,7 +747,7 @@ fn create_icon(size: i32) -> Option<HICON> {
 }
 
 /// Создаёт окно и запускает цикл сообщений до выхода.
-pub fn run(app: App, gpu: GpuDevice) -> anyhow::Result<()> {
+pub fn run(app: App, gpu: Arc<GpuDevice>) -> anyhow::Result<()> {
     let host = Box::new(Host {
         hwnd: Cell::new(HWND::default()),
         shared: Shared {
@@ -690,6 +765,7 @@ pub fn run(app: App, gpu: GpuDevice) -> anyhow::Result<()> {
             system_dark: Cell::new(system::system_dark_theme()),
             tracking: Cell::new(false),
             buttons_down: Cell::new(0),
+            hotkeys: RefCell::new(Vec::new()),
         },
         runtime: RefCell::new(None),
     });
@@ -778,6 +854,7 @@ pub fn run(app: App, gpu: GpuDevice) -> anyhow::Result<()> {
     ctx.set_fonts(crate::theme::font_definitions());
     *host.runtime.borrow_mut() = Some(Runtime {
         gpu,
+        preview: None,
         renderer,
         surface,
         ctx,
@@ -786,6 +863,7 @@ pub fn run(app: App, gpu: GpuDevice) -> anyhow::Result<()> {
         next_repaint: Some(Instant::now()),
         main_placement: None,
         first_frame_logged: false,
+        registered_hotkeys: std::collections::BTreeMap::new(),
     });
 
     // Первый кадр до показа окна, чтобы не мигал пустой фон.

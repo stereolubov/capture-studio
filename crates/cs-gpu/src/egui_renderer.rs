@@ -166,6 +166,11 @@ impl EguiRenderer {
         id
     }
 
+    /// Удаляет внешнюю текстуру.
+    pub fn unregister_native_texture(&mut self, id: TextureId) {
+        self.textures.remove(&id);
+    }
+
     /// Применяет изменения текстур до отрисовки кадра (забирает `delta.set`).
     pub fn update_textures(&mut self, delta: &mut TexturesDelta) -> Result<()> {
         for (id, deltas) in std::mem::take(&mut delta.set) {

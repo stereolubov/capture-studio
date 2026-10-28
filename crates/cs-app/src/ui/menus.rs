@@ -5,6 +5,7 @@ use super::{App, Mode, WindowCommand};
 use crate::theme;
 use cs_core::Command;
 use cs_core::config::settings::ThemePref;
+use cs_core::model::{Transition, TransitionKind};
 use egui::{Align2, Area, Context, Id, Order, Rect, Sense, pos2, vec2};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +72,9 @@ enum Action {
     Mixer,
     Stats,
     TogglePreview,
+    Undo,
+    Redo,
+    Transition(TransitionKind, u32),
 }
 
 fn items(app: &App, kind: MenuKind) -> Vec<Item> {
@@ -85,18 +89,44 @@ fn items(app: &App, kind: MenuKind) -> Vec<Item> {
             Item::Separator,
             act(t("menu-file-exit"), Action::Exit),
         ],
-        MenuKind::Scenes => vec![
-            act(t("menu-scenes-add"), Action::AddScene),
-            act(t("menu-scenes-duplicate"), Action::DuplicateScene),
-            act(t("menu-scenes-remove"), Action::RemoveScene),
-            Item::Separator,
-            Item::Action {
-                label: format!("{}: {}", t("menu-scenes-transition"), t("transition-fade")),
-                enabled: false,
-                checked: None,
-                action: Action::None,
-            },
-        ],
+        MenuKind::Scenes => {
+            let st = app.engine.state();
+            let tr = st.transition;
+            let mut v = vec![
+                act(t("menu-scenes-add"), Action::AddScene),
+                act(t("menu-scenes-duplicate"), Action::DuplicateScene),
+                act(t("menu-scenes-remove"), Action::RemoveScene),
+                Item::Separator,
+                Item::Action {
+                    label: t("menu-scenes-undo"),
+                    enabled: st.can_undo,
+                    checked: None,
+                    action: Action::Undo,
+                },
+                Item::Action {
+                    label: t("menu-scenes-redo"),
+                    enabled: st.can_redo,
+                    checked: None,
+                    action: Action::Redo,
+                },
+                Item::Separator,
+                Item::Action {
+                    label: format!("{}: {}", t("menu-scenes-transition"), t("transition-cut")),
+                    enabled: true,
+                    checked: Some(tr.kind == TransitionKind::Cut),
+                    action: Action::Transition(TransitionKind::Cut, tr.duration_ms),
+                },
+            ];
+            for ms in [300u32, 500, 1000] {
+                v.push(Item::Action {
+                    label: app.i18n.t_args("transition-fade-ms", &[("ms", crate::i18n::s(ms))]),
+                    enabled: true,
+                    checked: Some(tr.kind == TransitionKind::Fade && tr.duration_ms == ms),
+                    action: Action::Transition(TransitionKind::Fade, ms),
+                });
+            }
+            v
+        }
         MenuKind::View => {
             let th = app.settings.theme;
             let preview =
@@ -154,6 +184,7 @@ pub fn draw(app: &mut App, ctx: &Context) {
 
     let mut chosen = None;
     let area = Area::new(Id::unique("menu-popup"))
+        .fade_in(false)
         .order(Order::Foreground)
         .fixed_pos(pos2(anchor.left(), anchor.bottom() + 4.0))
         .show(ctx, |ui| {
@@ -213,6 +244,9 @@ fn run(app: &mut App, action: Action) {
     let active = app.engine.state().active_scene;
     match action {
         Action::None => {}
+        Action::Undo => app.send(Command::Undo),
+        Action::Redo => app.send(Command::Redo),
+        Action::Transition(kind, duration_ms) => app.send(Command::SetTransition(Transition { kind, duration_ms })),
         Action::OpenRecordings => {
             let dir = app.recordings_dir();
             app.push_command(WindowCommand::OpenFolder(dir));

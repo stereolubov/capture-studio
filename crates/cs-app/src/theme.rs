@@ -153,6 +153,21 @@ pub fn apply_style(ctx: &egui::Context, p: &Palette) {
     visuals.text_cursor.stroke = egui::Stroke::new(1.0, p.fg);
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, p.line);
     visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, p.fg);
+    // Поля ввода и списки в диалогах: фон `panel`, рамка `line`, радиус 4 (как поля 1c).
+    visuals.extreme_bg_color = p.panel;
+    let radius = egui::CornerRadius::same(4);
+    for (w, stroke) in [
+        (&mut visuals.widgets.inactive, p.line),
+        (&mut visuals.widgets.hovered, p.mute),
+        (&mut visuals.widgets.active, p.fg),
+        (&mut visuals.widgets.open, p.mute),
+    ] {
+        w.bg_fill = p.panel;
+        w.weak_bg_fill = p.panel;
+        w.bg_stroke = egui::Stroke::new(1.0, stroke);
+        w.corner_radius = radius;
+        w.fg_stroke = egui::Stroke::new(1.0, p.fg);
+    }
     visuals.window_corner_radius = egui::CornerRadius::same(4);
     visuals.popup_shadow = egui::epaint::Shadow::NONE;
     visuals.window_shadow = egui::epaint::Shadow::NONE;

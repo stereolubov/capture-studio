@@ -6,7 +6,7 @@
 //! переходные состояния, как у настоящего движка.
 
 use crate::clock::Ticks;
-use crate::model::{GameCaptureMethod, SceneId, SourceId};
+use crate::model::{Crop, GameCaptureMethod, SceneId, SourceId, Transform, Transition};
 use crate::state::{
     AppState, AudioChannel, Command, Engine, Event, MonitorMode, OutputStatus, OutputSummary, SceneView, SourceMeta,
     SourceView, Stats,
@@ -72,6 +72,13 @@ impl MockEngine {
                 visible: true,
                 locked: false,
                 error: None,
+                waiting: false,
+                minimized: false,
+                item: 3,
+                transform: Transform::default(),
+                crop: Crop::default(),
+                size: (0, 0),
+                kind: None,
             },
             SourceView {
                 id: SourceId::new(),
@@ -80,6 +87,13 @@ impl MockEngine {
                 visible: true,
                 locked: false,
                 error: None,
+                waiting: false,
+                minimized: false,
+                item: 2,
+                transform: Transform::default(),
+                crop: Crop::default(),
+                size: (0, 0),
+                kind: None,
             },
             SourceView {
                 id: SourceId::new(),
@@ -88,6 +102,13 @@ impl MockEngine {
                 visible: false,
                 locked: false,
                 error: None,
+                waiting: false,
+                minimized: false,
+                item: 1,
+                transform: Transform::default(),
+                crop: Crop::default(),
+                size: (0, 0),
+                kind: None,
             },
             SourceView {
                 id: SourceId::new(),
@@ -96,6 +117,13 @@ impl MockEngine {
                 visible: true,
                 locked: false,
                 error: None,
+                waiting: false,
+                minimized: false,
+                item: 0,
+                transform: Transform::default(),
+                crop: Crop::default(),
+                size: (0, 0),
+                kind: None,
             },
         ];
 
@@ -159,6 +187,11 @@ impl MockEngine {
                     rate_control: "CBR".into(),
                 },
                 preview_enabled: true,
+                preview: None,
+                transition: Transition::default(),
+                can_undo: false,
+                can_redo: false,
+                live_engine: false,
             },
             animate,
             last_tick: Ticks::now(),
@@ -322,11 +355,27 @@ impl Engine for MockEngine {
                     s.name = name;
                 }
             }
-            Command::ToggleSourceVisible(i) => {
-                if let Some(s) = st.sources.get_mut(i) {
+            Command::ToggleSourceVisible(item) => {
+                if let Some(s) = st.sources.iter_mut().find(|s| s.item == item) {
                     s.visible = !s.visible;
                 }
             }
+            Command::ToggleItemLocked(item) => {
+                if let Some(s) = st.sources.iter_mut().find(|s| s.item == item) {
+                    s.locked = !s.locked;
+                }
+            }
+            Command::SetTransition(t) => st.transition = t,
+            // Редактирование сцен в моке не поддерживается: только визуальная оболочка.
+            Command::AddSource { .. }
+            | Command::UpdateSource { .. }
+            | Command::RemoveItem(_)
+            | Command::MoveItem { .. }
+            | Command::SetItemTransform { .. }
+            | Command::ItemAction { .. }
+            | Command::Checkpoint
+            | Command::Undo
+            | Command::Redo => {}
             Command::StartStream if st.stream == OutputStatus::Idle => {
                 st.stream = OutputStatus::Starting;
                 self.stream_transition = Some(Ticks::now());
@@ -361,23 +410,16 @@ impl Engine for MockEngine {
             }
             Command::SetPreviewEnabled(v) => st.preview_enabled = v,
             Command::ApplyProfile(p) => {
-                use crate::config::profile::{EncoderKind, RateControl};
+                use crate::config::profile::EncoderKind;
                 let o = &mut st.output;
                 o.bitrate_kbps = p.output.bitrate_kbps;
-                o.rate_control = match p.output.rate_control {
-                    RateControl::Cbr => "CBR",
-                    RateControl::Vbr => "VBR",
-                    RateControl::Cqp => "CQP",
-                }
-                .into();
-                o.encoder = match p.output.encoder {
-                    EncoderKind::Auto | EncoderKind::Nvenc => "NVENC H.264",
-                    EncoderKind::Amf => "AMF H.264",
-                    EncoderKind::Qsv => "QSV H.264",
-                    EncoderKind::MediaFoundation => "MF H.264",
-                    EncoderKind::Software => "OpenH264",
-                }
-                .into();
+                o.rate_control = p.output.rate_control.label().into();
+                // В моке «Авто» показывает NVENC, как в дизайне.
+                o.encoder = if p.output.encoder == EncoderKind::Auto {
+                    "NVENC H.264".into()
+                } else {
+                    p.output.encoder.label().into()
+                };
                 if let Some(c) = p.video.canvas {
                     o.canvas = c;
                 }
@@ -446,7 +488,8 @@ mod tests {
         m.send(Command::RemoveScene(3));
         assert_eq!(m.state().scenes.len(), 3);
         assert_eq!(m.state().active_scene, 2);
-        m.send(Command::ToggleSourceVisible(2));
+        // Оверлей чата — третий сверху, элемент №1 снизу.
+        m.send(Command::ToggleSourceVisible(1));
         assert!(m.state().sources[2].visible);
     }
 }

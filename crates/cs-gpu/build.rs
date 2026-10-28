@@ -8,8 +8,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// (файл, точка входа, профиль, имя результата)
-const SHADERS: &[(&str, &str, &str, &str)] =
-    &[("egui.hlsl", "vs_main", "vs_4_0", "egui_vs.cso"), ("egui.hlsl", "ps_main", "ps_4_0", "egui_ps.cso")];
+const SHADERS: &[(&str, &str, &str, &str)] = &[
+    ("egui.hlsl", "vs_main", "vs_4_0", "egui_vs.cso"),
+    ("egui.hlsl", "ps_main", "ps_4_0", "egui_ps.cso"),
+    ("compose.hlsl", "vs_main", "vs_4_0", "compose_vs.cso"),
+    ("compose.hlsl", "ps_main", "ps_4_0", "compose_ps.cso"),
+];
 
 fn find_fxc() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("CS_FXC") {

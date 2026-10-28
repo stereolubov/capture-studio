@@ -9,7 +9,9 @@ mod main_window;
 mod menus;
 mod mini;
 mod mixer;
+pub mod preview;
 mod settings;
+mod source_dialog;
 mod stats;
 mod toasts;
 pub mod widgets;
@@ -86,6 +88,7 @@ struct Overlays {
     settings: Option<settings::SettingsDialog>,
     mixer: Option<mixer::MixerUi>,
     stats: Option<stats::StatsUi>,
+    source: Option<source_dialog::SourceDialog>,
 }
 
 /// Корневой объект UI.
@@ -106,6 +109,9 @@ pub struct App {
     commands: Vec<WindowCommand>,
     /// Последний применённый язык/тема (чтобы перенастраивать egui только при изменении).
     applied: Option<(String, Palette)>,
+    /// Текстура превью сцены в egui (регистрирует платформенный слой).
+    pub preview_texture: Option<egui::TextureId>,
+    pub preview_ui: preview::PreviewUi,
 }
 
 impl App {
@@ -126,6 +132,8 @@ impl App {
             chrome: Chrome::default(),
             commands: Vec::new(),
             applied: None,
+            preview_texture: None,
+            preview_ui: preview::PreviewUi::default(),
         }
     }
 
@@ -159,6 +167,23 @@ impl App {
 
     pub fn open_mixer(&mut self, focus: Option<usize>) {
         self.overlays.mixer = Some(mixer::MixerUi::new(focus));
+    }
+
+    /// Окно свойств источника.
+    pub fn open_source_dialog(&mut self, src: Option<cs_core::state::SourceView>) {
+        if let Some(d) = src.as_ref().and_then(source_dialog::SourceDialog::edit) {
+            self.overlays.source = Some(d);
+        }
+    }
+
+    /// Окно добавления источника заданного типа.
+    pub fn open_new_source(&mut self, kind: source_dialog::NewKind) {
+        self.overlays.source = Some(source_dialog::SourceDialog::new_source(self, kind));
+    }
+
+    /// Открыто модальное окно (настройки или свойства источника).
+    pub fn modal_open(&self) -> bool {
+        self.overlays.settings.is_some() || self.overlays.source.is_some()
     }
 
     pub fn open_stats(&mut self) {
@@ -213,6 +238,7 @@ impl App {
                     (self.i18n.t_args("toast-remux-done", &[("path", s(path))]), toasts::Kind::Info)
                 }
                 Event::Error(msg) => (self.i18n.t_args("toast-error", &[("msg", s(msg))]), toasts::Kind::Error),
+                Event::Info(msg) => (msg, toasts::Kind::Info),
             };
             self.toasts.push(text, kind);
         }
@@ -265,6 +291,12 @@ impl App {
                 self.overlays.stats = Some(s);
             }
         }
+        if let Some(mut d) = self.overlays.source.take() {
+            let keep = source_dialog::modal(self, ctx, &mut d, screen);
+            if keep && self.overlays.source.is_none() {
+                self.overlays.source = Some(d);
+            }
+        }
         if let Some(mut d) = self.overlays.settings.take() {
             let keep = settings::modal(self, ctx, &mut d, screen);
             if keep && self.overlays.settings.is_none() {
@@ -275,8 +307,21 @@ impl App {
 
     /// Локальные горячие клавиши окна (глобальные — M3, §13).
     fn local_hotkeys(&mut self, ctx: &Context) {
-        if ctx.egui_wants_keyboard_input() || self.overlays.settings.is_some() {
+        if ctx.egui_wants_keyboard_input() || self.modal_open() {
             return;
+        }
+        // Undo/Redo операций со сценами (§7.2).
+        let (undo, redo) = ctx.input(|i| {
+            let ctrl = i.modifiers.ctrl && !i.modifiers.alt;
+            (
+                ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
+                ctrl && (i.key_pressed(egui::Key::Y) || i.modifiers.shift && i.key_pressed(egui::Key::Z)),
+            )
+        });
+        if undo {
+            self.send(Command::Undo);
+        } else if redo {
+            self.send(Command::Redo);
         }
         let keys = [egui::Key::F1, egui::Key::F2, egui::Key::F3, egui::Key::F4];
         let pressed: Vec<usize> = ctx.input(|i| {
@@ -318,6 +363,8 @@ pub enum Screen {
     Mixer,
     Stats,
     Mini,
+    /// Главное окно с открытым окном свойств текстового источника.
+    Source,
 }
 
 impl Screen {
@@ -328,6 +375,7 @@ impl Screen {
             "1d" | "mixer" => Self::Mixer,
             "1e" | "stats" => Self::Stats,
             "1f" | "mini" => Self::Mini,
+            "source" => Self::Source,
             _ => return None,
         })
     }
@@ -343,6 +391,7 @@ impl App {
             Screen::Mixer => mixer::panel_size(self, ctx),
             Screen::Stats => stats::panel_size(self, ctx),
             Screen::Mini => mini::SIZE,
+            Screen::Source => Vec2::new(1282.0, 762.0),
         }
     }
 
@@ -368,7 +417,17 @@ impl App {
                 self.mode = Mode::Mini;
                 mini::draw(self, ui, rect);
             }
+            Screen::Source => main_window::draw(self, ui, rect),
         });
+        if screen == Screen::Source {
+            if self.overlays.source.is_none() {
+                self.open_new_source(source_dialog::NewKind::Text);
+            }
+            if let Some(mut d) = self.overlays.source.take() {
+                source_dialog::modal(self, ctx, &mut d, rect);
+                self.overlays.source = Some(d);
+            }
+        }
     }
 }
 

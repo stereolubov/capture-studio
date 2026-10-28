@@ -4,18 +4,26 @@
 //! в egui как нативная текстура через [`EguiRenderer::register_native_texture`] без копий.
 
 #[cfg(windows)]
+mod compositor;
+#[cfg(windows)]
 mod device;
 #[cfg(windows)]
 mod egui_renderer;
 #[cfg(windows)]
 mod surface;
+#[cfg(windows)]
+mod text;
 
 #[cfg(windows)]
-pub use device::{AdapterInfo, DriverKind, GpuDevice};
+pub use compositor::{Compositor, DrawItem, DrawSource};
+#[cfg(windows)]
+pub use device::{AdapterInfo, DriverKind, GpuDevice, GpuTexture};
 #[cfg(windows)]
 pub use egui_renderer::EguiRenderer;
 #[cfg(windows)]
 pub use surface::{OffscreenTarget, WindowSurface};
+#[cfg(windows)]
+pub use text::{TextRenderer, TextStyle};
 
 /// Ошибки GPU-слоя.
 #[derive(Debug, thiserror::Error)]

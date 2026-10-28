@@ -330,6 +330,13 @@ pub fn visibility_icon(painter: &Painter, center: Pos2, visible: bool, color: Co
     }
 }
 
+/// Замок (элемент заблокирован).
+pub fn lock_icon(painter: &Painter, center: Pos2, color: Color32) {
+    let body = Rect::from_center_size(center + vec2(0.0, 1.5), vec2(8.0, 6.0));
+    painter.rect_filled(body, 1.0, color);
+    painter.circle_stroke(center + vec2(0.0, -1.5), 2.5, Stroke::new(1.2, color));
+}
+
 /// Скруглённая подложка (бейдж `PROGRAM`).
 pub fn badge(painter: &Painter, min: Pos2, s: &str, font: FontId, pad: Vec2, bg: Color32, fg: Color32) -> Rect {
     let g = galley(painter, s, font, fg);

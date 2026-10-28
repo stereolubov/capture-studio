@@ -53,6 +53,7 @@ pub fn window(app: &mut App, ctx: &Context, m: &mut MixerUi, screen: Rect) -> bo
     let default = pos2(screen.right() - 280.0 - size.x - 16.0, screen.top() + 52.0);
     let mut keep = true;
     let area = Area::new(Id::unique("mixer"))
+        .fade_in(false)
         .order(Order::Middle)
         .default_pos(m.pos.unwrap_or(default))
         .constrain_to(screen)

@@ -3,7 +3,7 @@
 //! UI получает `Arc<AppState>` (дешёвый снимок), команды отправляет через [`Command`],
 //! а значимые происшествия (для тостов и лога) приходят как [`Event`].
 
-use crate::model::{GameCaptureMethod, SceneId, SourceId};
+use crate::model::{Crop, GameCaptureMethod, SceneId, SourceId, SourceKind, Transform, Transition};
 
 /// Состояние вывода — конечный автомат §10.3.
 #[derive(Debug, Clone, PartialEq)]
@@ -51,11 +51,13 @@ pub enum SourceMeta {
         exe: String,
         width: u32,
         height: u32,
+        method: Option<String>,
     },
     Monitor {
         index: u32,
         width: u32,
         height: u32,
+        method: Option<String>,
     },
     Camera {
         device: String,
@@ -87,6 +89,27 @@ pub struct SourceView {
     pub locked: bool,
     /// Ошибка источника — показывается в мета-строке цветом `warn`.
     pub error: Option<String>,
+    /// Источник ждёт окно/устройство.
+    pub waiting: bool,
+    /// Окно источника свёрнуто (показывается последний кадр).
+    pub minimized: bool,
+    /// Индекс элемента в сцене (`Scene::items`, снизу вверх). Список `AppState::sources`
+    /// упорядочен сверху вниз, как в интерфейсе.
+    pub item: usize,
+    pub transform: Transform,
+    pub crop: Crop,
+    /// Собственный размер источника (0×0 — ещё нет кадра).
+    pub size: (u32, u32),
+    /// Конфигурация источника (для окна свойств).
+    pub kind: Option<SourceKind>,
+}
+
+/// Превью сцены: текстура холста на GPU. `generation` меняется при пересоздании текстуры.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewInfo {
+    pub generation: u64,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Режим мониторинга канала (§8.2).
@@ -170,6 +193,13 @@ pub struct AppState {
     pub stats: Stats,
     pub output: OutputSummary,
     pub preview_enabled: bool,
+    /// `None` — превью недоступно (мок-режим, нет GPU).
+    pub preview: Option<PreviewInfo>,
+    pub transition: Transition,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    /// Движок настоящий (не мок): старт трансляции/записи появится в M2–M3.
+    pub live_engine: bool,
 }
 
 /// Команды от UI (и горячих клавиш) к движку.
@@ -180,7 +210,43 @@ pub enum Command {
     RemoveScene(usize),
     DuplicateScene(usize),
     RenameScene(usize, String),
+    /// Видимость элемента активной сцены (индекс `SceneItem`).
     ToggleSourceVisible(usize),
+    ToggleItemLocked(usize),
+    /// Добавить новый источник поверх активной сцены.
+    AddSource {
+        name: String,
+        kind: SourceKind,
+    },
+    /// Изменить свойства источника (во всех сценах).
+    UpdateSource {
+        id: SourceId,
+        name: String,
+        kind: SourceKind,
+    },
+    RemoveItem(usize),
+    /// Перенести элемент (индексы `SceneItem`, снизу вверх).
+    MoveItem {
+        from: usize,
+        to: usize,
+    },
+    /// Трансформация элемента. `record = false` — промежуточный шаг перетаскивания
+    /// (в историю попадает [`Command::Checkpoint`], отправленный в начале жеста).
+    SetItemTransform {
+        item: usize,
+        transform: Transform,
+        crop: Crop,
+        record: bool,
+    },
+    ItemAction {
+        item: usize,
+        action: ItemAction,
+    },
+    /// Запомнить текущее состояние сцен в истории (перед жестом мышью).
+    Checkpoint,
+    Undo,
+    Redo,
+    SetTransition(Transition),
     StartStream,
     StopStream,
     StartRecording,
@@ -199,16 +265,35 @@ pub enum Command {
     ApplyProfile(Box<crate::config::Profile>),
 }
 
+/// Действия контекстного меню элемента (§7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemAction {
+    Fit,
+    Stretch,
+    Center,
+    Reset,
+    RotateCw,
+}
+
 /// Важные события движка: показываются тостами и пишутся в лог.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     StreamStarted,
     StreamStopped,
-    StreamReconnecting { attempt: u32, max: u32 },
+    StreamReconnecting {
+        attempt: u32,
+        max: u32,
+    },
     RecordingStarted,
-    RecordingStopped { path: String },
-    RemuxFinished { path: String },
+    RecordingStopped {
+        path: String,
+    },
+    RemuxFinished {
+        path: String,
+    },
     Error(String),
+    /// Информационное сообщение (тост).
+    Info(String),
 }
 
 /// Интерфейс движка, которым пользуется UI. Реальный движок (M1+) и мок
@@ -218,4 +303,9 @@ pub trait Engine {
     /// Продвигает внутреннее время (для мока) и возвращает новые события.
     fn poll(&mut self) -> Vec<Event>;
     fn state(&self) -> &AppState;
+    /// Нативная текстура превью для платформенного слоя: (поколение, платформенный объект).
+    /// На Windows — `ID3D11ShaderResourceView`. Мок превью не имеет.
+    fn preview_handle(&self) -> Option<(u64, Box<dyn std::any::Any>)> {
+        None
+    }
 }

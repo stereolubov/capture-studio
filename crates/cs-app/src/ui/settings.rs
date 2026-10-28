@@ -80,16 +80,22 @@ pub fn modal(app: &mut App, ctx: &Context, d: &mut SettingsDialog, screen: Rect)
     let p = app.palette();
     // Затемнение фона и блокировка кликов под модальным окном.
     let mut keep = true;
-    Area::new(Id::unique("settings-dim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
-        let (r, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
-        ui.painter().rect_filled(r, 0.0, Color32::from_black_alpha(if p.dark { 110 } else { 70 }));
-        let _ = resp;
-    });
+    Area::new(Id::unique("settings-dim")).fade_in(false).order(Order::Foreground).fixed_pos(screen.min).show(
+        ctx,
+        |ui| {
+            let (r, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
+            ui.painter().rect_filled(r, 0.0, Color32::from_black_alpha(if p.dark { 110 } else { 70 }));
+            let _ = resp;
+        },
+    );
     let rect = centered(screen, vec2(WIDTH, d.last_height));
-    Area::new(Id::unique("settings-panel")).order(Order::Foreground).fixed_pos(rect.min).show(ctx, |ui| {
-        let (r, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
-        keep = draw_panel(app, ui, d, r);
-    });
+    Area::new(Id::unique("settings-panel")).fade_in(false).order(Order::Foreground).fixed_pos(rect.min).show(
+        ctx,
+        |ui| {
+            let (r, _) = ui.allocate_exact_size(rect.size(), Sense::hover());
+            keep = draw_panel(app, ui, d, r);
+        },
+    );
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && d.capturing.is_none() {
         keep = false;
     }

@@ -24,6 +24,8 @@ pub struct MainUi {
     rename: Option<(usize, String)>,
     /// Время первого нажатия «Остановить» при включённом подтверждении.
     stop_armed: Option<f64>,
+    /// Перетаскиваемый источник (позиция в списке сверху вниз).
+    drag_source: Option<usize>,
 }
 
 pub fn draw(app: &mut App, ui: &mut Ui, rect: Rect) {
@@ -263,47 +265,108 @@ fn left_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
     w::hline(&painter, r.left(), inner_right, y, p.line);
     y += 1.0 + 18.0;
     w::caption(&painter, pos2(r.left() + PAD_X, y), Align2::LEFT_TOP, &app.i18n.t("section-sources"), p);
-    add_button(app, ui, p, pos2(inner_right - PAD_X, y + lh11 / 2.0), "add-source", |app| {
-        let msg = app.i18n.t("add-source-soon");
-        app.toast(msg);
+    let add = add_button(app, ui, p, pos2(inner_right - PAD_X, y + lh11 / 2.0), "add-source", |_| {});
+    egui::Popup::menu(&add).show(|ui| {
+        ui.set_min_width(200.0);
+        for (kind, key) in super::source_dialog::ADDABLE {
+            if ui.button(app.i18n.t(key)).clicked() {
+                app.open_new_source(kind);
+                ui.close();
+            }
+        }
+        ui.separator();
+        for key in super::source_dialog::LATER {
+            ui.add_enabled(false, egui::Button::new(format!("{} · {}", app.i18n.t(key), app.i18n.t("menu-soon"))));
+        }
     });
     y += lh11 + 6.0;
 
     let sources = app.engine.state().sources.clone();
     let src_h = 7.0 + lh13 + 2.0 + lh11 + 7.0;
+    let list_top = y;
+    let n = sources.len();
+    let mut drop_target: Option<usize> = None;
+    let dragging = app.main.drag_source;
     for (i, src) in sources.iter().enumerate() {
         let row = Rect::from_min_size(pos2(r.left(), y), vec2(inner_right - r.left(), src_h));
         if row.top() > r.bottom() {
             break;
         }
-        let resp = w::hit(ui, row, ("source", i), Sense::click());
-        if resp.hovered() {
+        let resp = w::hit(ui, row, ("source", src.id.0), Sense::click_and_drag());
+        let selected = app.preview_ui.selected == Some(src.id);
+        if selected {
+            painter.rect_filled(row, 0.0, p.selected);
+        } else if resp.hovered() {
             painter.rect_filled(row, 0.0, p.hover);
         }
         let ty = y + 7.0;
         w::text(&painter, pos2(r.left() + PAD_X, ty), Align2::LEFT_TOP, &src.name, theme::sans(theme::TEXT), p.fg);
         let meta = format::source_meta(&app.i18n, src);
-        let meta_color = if src.error.is_some() { p.warn } else { p.mute };
-        w::text(
-            &painter,
+        let meta_color = if src.error.is_some() || src.waiting { p.warn } else { p.mute };
+        let meta_rect = Rect::from_min_max(
             pos2(r.left() + PAD_X, ty + lh13 + 2.0),
+            pos2(inner_right - PAD_X, ty + lh13 + 2.0 + lh11),
+        );
+        w::text(
+            &painter.with_clip_rect(meta_rect),
+            meta_rect.min,
             Align2::LEFT_TOP,
             &meta,
             theme::sans(theme::TEXT_CAPTION),
             meta_color,
         );
 
-        // Иконка видимости ◉/○: кликабельна.
+        // Иконка видимости ◉/○ и замок: кликабельны.
         let vis_c = pos2(inner_right - PAD_X - 3.5, ty + lh11m / 2.0);
         let vis_rect = egui::Rect::from_center_size(vis_c, vec2(18.0, 18.0));
         let tip = if src.visible { "source-visible" } else { "source-hidden" };
-        let vresp = w::hit(ui, vis_rect, ("vis", i), Sense::click()).on_hover_text(app.i18n.t(tip));
+        let vresp = w::hit(ui, vis_rect, ("vis", src.id.0), Sense::click()).on_hover_text(app.i18n.t(tip));
         let vcolor = if vresp.hovered() { p.fg } else { p.mute };
         w::visibility_icon(&painter, vis_c, src.visible, vcolor);
         if vresp.clicked() {
-            app.send(Command::ToggleSourceVisible(i));
+            app.send(Command::ToggleSourceVisible(src.item));
         }
+        if src.locked {
+            w::lock_icon(&painter, pos2(vis_c.x - 16.0, vis_c.y), p.mute);
+        }
+
+        if resp.double_clicked() {
+            app.open_source_dialog(Some(src.clone()));
+        } else if resp.clicked() {
+            app.preview_ui.selected = Some(src.id);
+        }
+        if resp.drag_started() {
+            app.main.drag_source = Some(i);
+        }
+        resp.context_menu(|ui| super::preview::item_menu(app, ui, src));
         y += src_h;
+    }
+
+    // Перетаскивание порядка (drag & drop, §7.2): линия вставки и перенос по отпусканию.
+    if let Some(from) = dragging {
+        if let Some(pos) = ui.ctx().pointer_hover_pos() {
+            let slot = (((pos.y - list_top) / src_h).round().max(0.0) as usize).min(n);
+            drop_target = Some(slot);
+            let ly = list_top + slot as f32 * src_h;
+            painter.rect_filled(
+                Rect::from_min_size(pos2(r.left() + 6.0, ly - 1.0), vec2(inner_right - r.left() - 12.0, 2.0)),
+                1.0,
+                p.live,
+            );
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
+        if !ui.input(|i| i.pointer.primary_down()) {
+            app.main.drag_source = None;
+            if let Some(slot) = drop_target {
+                // Позиции списка сверху вниз → индексы элементов сцены снизу вверх.
+                let to_display = if slot > from { slot - 1 } else { slot };
+                if to_display != from && from < n {
+                    let item_from = sources[from].item;
+                    let item_to = n - 1 - to_display;
+                    app.send(Command::MoveItem { from: item_from, to: item_to });
+                }
+            }
+        }
     }
 }
 
@@ -315,7 +378,7 @@ fn add_button(
     right_center: egui::Pos2,
     id: &str,
     on_click: impl FnOnce(&mut App),
-) {
+) -> egui::Response {
     let c = pos2(right_center.x - 3.5, right_center.y);
     let rect = Rect::from_center_size(c, vec2(18.0, 18.0));
     let resp = w::hit(ui, rect, id, Sense::click());
@@ -326,6 +389,7 @@ fn add_button(
     if resp.clicked() {
         on_click(app);
     }
+    resp
 }
 
 fn center_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
@@ -336,14 +400,16 @@ fn center_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
     let st = app.engine.state().clone();
     let out = &st.output;
 
-    // Превью: в M0 — заглушка со штриховкой (настоящее превью появится в M1).
-    w::hatch(&painter, preview.shrink(1.0), p.panel, p.bg);
+    // Превью сцены (текстура холста); без движка (мок, скриншоты) — заглушка со штриховкой.
+    if !super::preview::draw(app, ui, p, preview) {
+        w::hatch(&painter, preview.shrink(1.0), p.panel, p.bg);
+        let label = app.i18n.t_args(
+            "preview-placeholder",
+            &[("w", s(out.canvas.0)), ("h", s(out.canvas.1)), ("fps", s(format::fps(out.fps)))],
+        );
+        w::text(&painter, preview.center(), Align2::CENTER_CENTER, &label, theme::mono(theme::TEXT_SMALL), p.mute);
+    }
     w::border(&painter, preview, 4.0, p.line);
-    let label = app.i18n.t_args(
-        "preview-placeholder",
-        &[("w", s(out.canvas.0)), ("h", s(out.canvas.1)), ("fps", s(format::fps(out.fps)))],
-    );
-    w::text(&painter, preview.center(), Align2::CENTER_CENTER, &label, theme::mono(theme::TEXT_SMALL), p.mute);
     w::badge(
         &painter,
         preview.min + vec2(11.0, 10.0),
@@ -415,6 +481,10 @@ fn right_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
         }
         y += ch_h;
     }
+    if audio.is_empty() && app.engine.state().live_engine {
+        let hint = app.i18n.t("audio-later");
+        w::text(&painter, pos2(left + PAD_X, y + 4.0), Align2::LEFT_TOP, &hint, theme::sans(theme::TEXT_SMALL), p.mute);
+    }
 
     // Кнопки управления внизу.
     let hs = 9.0 + lh13 + 9.0;
@@ -450,6 +520,9 @@ fn right_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
                 app.main.stop_armed = None;
                 app.send(Command::StopStream);
             }
+        } else if st.live_engine {
+            let msg = app.i18n.t("stream-later");
+            app.toast(msg);
         } else {
             app.send(Command::StartStream);
         }
@@ -463,6 +536,9 @@ fn right_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
     {
         if st.record.is_active() {
             app.send(Command::StopRecording);
+        } else if st.live_engine {
+            let msg = app.i18n.t("record-later");
+            app.toast(msg);
         } else {
             app.send(Command::StartRecording);
         }
@@ -493,7 +569,11 @@ fn status_bar(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
     let rec = if st.record.is_active() { format_hms(st.record_elapsed_secs) } else { "—".into() };
     let items: [(String, String, Color32); 6] = [
         (app.i18n.t("status-cpu"), format!("{:.0}%", stats.cpu_percent), p.fg),
-        (app.i18n.t("status-gpu"), format!("{:.0}%", stats.gpu_percent), p.fg),
+        (
+            app.i18n.t("status-gpu"),
+            if stats.gpu_percent.is_finite() { format!("{:.0}%", stats.gpu_percent) } else { "—".into() },
+            p.fg,
+        ),
         (app.i18n.t("status-fps"), format!("{:.1}", stats.fps), fps_color),
         (app.i18n.t("status-bitrate"), format!("{:.0} {}", stats.bitrate_kbps, app.i18n.t("unit-kbps")), p.fg),
         (app.i18n.t("status-drops"), format!("{} ({:.1}%)", stats.dropped_frames, drop_pct), drop_color),

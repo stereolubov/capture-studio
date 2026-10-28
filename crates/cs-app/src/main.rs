@@ -10,6 +10,8 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod args;
+#[cfg(windows)]
+mod engine;
 mod i18n;
 #[cfg(windows)]
 mod platform;
@@ -21,6 +23,7 @@ mod ui;
 use anyhow::Context as _;
 use cs_core::config::{self, DataDirs, Profile, Settings};
 use cs_core::mock::MockEngine;
+use cs_core::model::SceneCollection;
 
 fn main() {
     let args = match args::Args::parse(std::env::args().skip(1)) {
@@ -76,15 +79,28 @@ fn run(args: args::Args) -> anyhow::Result<()> {
     });
     set_process_priority(settings.process_priority);
 
-    let gpu = cs_gpu::GpuDevice::new(cs_gpu::DriverKind::Hardware)?;
-    // В M0 настоящего движка ещё нет: всегда мок (с анимацией).
-    if !args.mock_ui {
-        tracing::info!("движок захвата появится в M1; запуск с мок-состоянием");
+    let gpu = std::sync::Arc::new(cs_gpu::GpuDevice::new(cs_gpu::DriverKind::Hardware)?);
+    let engine: Box<dyn cs_core::state::Engine> = if args.mock_ui {
+        let mut engine = MockEngine::new(true);
+        engine.state_mut().preview_enabled = settings.preview_enabled;
+        Box::new(engine)
+    } else {
+        let path = dirs.scenes_dir().join(format!("{}.toml", settings.last_scene_collection));
+        let collection: SceneCollection = config::load(&path).unwrap_or_else(|e| {
+            tracing::warn!("коллекция сцен: {e}; создаётся новая");
+            SceneCollection::default()
+        });
+        Box::new(engine::EngineHandle::start(engine::EngineConfig {
+            gpu: gpu.clone(),
+            collection,
+            collection_path: Some(path),
+            profile: profile.clone(),
+        })?)
+    };
+    let mut app = ui::App::new(engine, settings, profile, Some(dirs));
+    if args.mock_ui {
+        app.send(cs_core::Command::ApplyProfile(Box::new(app.profile.clone())));
     }
-    let mut engine = MockEngine::new(true);
-    engine.state_mut().preview_enabled = settings.preview_enabled;
-    let mut app = ui::App::new(Box::new(engine), settings, profile, Some(dirs));
-    app.send(cs_core::Command::ApplyProfile(Box::new(app.profile.clone())));
     platform::window::run(app, gpu)?;
     tracing::info!("выход");
     Ok(())
