@@ -5,7 +5,7 @@
 
 | Крейт | Где | Зачем | Лицензия | Альтернатива |
 |---|---|---|---|---|
-| `egui` 0.37 (без `default_fonts`-зависимостей кроме встроенных) | cs-app, cs-gpu | Immediate-mode UI (§5.2 п.2) | MIT/Apache-2.0 | Slint, iced — через ADR с замерами |
+| `egui` 0.37 (без default-фич: шрифты egui не встраиваются, только свои OFL) | cs-app, cs-gpu | Immediate-mode UI (§5.2 п.2) | MIT/Apache-2.0 | Slint, iced — через ADR с замерами |
 | `windows` 0.62 | cs-app, cs-gpu | Win32/D3D11/DXGI/DComp/DWM — типизированные COM-обёртки | MIT/Apache-2.0 | `winapi` (не развивается) |
 | `windows-sys` 0.61 | cs-core, cs-diag | Лёгкие FFI-функции без COM (QPC, ReplaceFileW, метрики процесса) | MIT/Apache-2.0 | `windows` (тяжелее компилируется) |
 | `serde` | cs-core | Сериализация конфигов | MIT/Apache-2.0 | — |

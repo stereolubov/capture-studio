@@ -33,14 +33,14 @@ cs-output = { path = "crates/cs-output" }
 cs-hotkeys = { path = "crates/cs-hotkeys" }
 cs-diag = { path = "crates/cs-diag" }
 
-egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
+egui = { version = "0.37", default-features = false }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi"] }
-parking_lot = "0.13"
+parking_lot = "0.12"
 crossbeam-channel = "0.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 fluent-bundle = "0.16"
