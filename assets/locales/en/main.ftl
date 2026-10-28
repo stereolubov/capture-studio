@@ -275,3 +275,4 @@ menu-scenes-undo = Undo
 menu-scenes-redo = Redo
 transition-fade-ms = Fade · { $ms } ms
 hotkey-register-failed = Could not register global hotkey { $key }: used by another application
+audio-no-device = Device not connected — the channel waits for it

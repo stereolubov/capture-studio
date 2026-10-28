@@ -205,7 +205,7 @@ pub fn draw_panel(app: &mut App, ui: &mut Ui, m: &mut MixerUi, rect: Rect) -> bo
         }
         let gresp = w::badge_button(ui, grect, ("gear", i), None, &p);
         w::icon(&painter, grect.center(), Icon::Gear, 9.0, p.mute);
-        gear_menu(app, &gresp, i, ch.monitor);
+        gear_menu(app, &gresp, i, ch.monitor, ch.tracks);
     }
 
     // Закрыть (✕) в правом верхнем углу — нужно для панели внутри окна.
@@ -215,7 +215,7 @@ pub fn draw_panel(app: &mut App, ui: &mut Ui, m: &mut MixerUi, rect: Rect) -> bo
     !cresp.clicked()
 }
 
-fn gear_menu(app: &mut App, resp: &egui::Response, ch: usize, monitor: MonitorMode) {
+fn gear_menu(app: &mut App, resp: &egui::Response, ch: usize, monitor: MonitorMode, tracks: u8) {
     let p: Palette = app.palette();
     egui::Popup::menu(resp).show(|ui| {
         ui.set_min_width(200.0);
@@ -234,5 +234,17 @@ fn gear_menu(app: &mut App, resp: &egui::Response, ch: usize, monitor: MonitorMo
                 app.send(Command::SetMonitor { channel: ch, mode });
             }
         }
+        ui.separator();
+        ui.label(egui::RichText::new(app.i18n.t("mixer-tracks")).color(p.mute).font(theme::sans(theme::TEXT_CAPTION)));
+        // Дорожки 1–6 (§8.2): на трансляцию идёт дорожка 1.
+        ui.horizontal(|ui| {
+            for t in 0..6u8 {
+                let mut on = tracks & (1 << t) != 0;
+                if ui.checkbox(&mut on, format!("{}", t + 1)).changed() {
+                    let new = if on { tracks | (1 << t) } else { tracks & !(1 << t) };
+                    app.send(Command::SetTracks { channel: ch, tracks: new });
+                }
+            }
+        });
     });
 }

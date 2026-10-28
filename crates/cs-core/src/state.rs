@@ -135,6 +135,10 @@ pub struct AudioChannel {
     pub rms: [f32; 2],
     /// Удерживаемый пик (1.5 с), dBFS.
     pub peak_hold: [f32; 2],
+    /// Устройство канала недоступно (отключено) — показывается цветом `warn`.
+    pub device_missing: bool,
+    /// Битовая маска дорожек 1–6.
+    pub tracks: u8,
 }
 
 /// Метрики для статус-бара и окна статистики (§14.1).
@@ -259,6 +263,10 @@ pub enum Command {
     SetMonitor {
         channel: usize,
         mode: MonitorMode,
+    },
+    SetTracks {
+        channel: usize,
+        tracks: u8,
     },
     SetPreviewEnabled(bool),
     /// Применить профиль (вывод, кодирование, видео). Движок перезапускает затронутые части.

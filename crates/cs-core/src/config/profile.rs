@@ -194,11 +194,61 @@ pub struct AudioSettings {
     pub desktop_device: Option<String>,
     pub mic_device: Option<String>,
     pub monitoring_device: Option<String>,
+    /// Каналы микшера: «Рабочий стол», «Микрофон» (§8.1).
+    pub channels: Vec<AudioChannelSettings>,
+}
+
+/// Источник звука канала.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioChannelKind {
+    /// Loopback устройства вывода.
+    Desktop,
+    /// Устройство ввода.
+    Mic,
+}
+
+/// Сохраняемые настройки канала микшера (§8.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioChannelSettings {
+    pub name: String,
+    pub kind: AudioChannelKind,
+    pub fader_db: f32,
+    #[serde(default)]
+    pub muted: bool,
+    /// Битовая маска дорожек записи 1–6.
+    #[serde(default = "default_tracks")]
+    pub tracks: u8,
+}
+
+fn default_tracks() -> u8 {
+    0b1
 }
 
 impl Default for AudioSettings {
     fn default() -> Self {
-        Self { sample_rate: 48_000, desktop_device: None, mic_device: None, monitoring_device: None }
+        Self {
+            sample_rate: 48_000,
+            desktop_device: None,
+            mic_device: None,
+            monitoring_device: None,
+            channels: vec![
+                AudioChannelSettings {
+                    name: "Рабочий стол".into(),
+                    kind: AudioChannelKind::Desktop,
+                    fader_db: 0.0,
+                    muted: false,
+                    tracks: 0b1,
+                },
+                AudioChannelSettings {
+                    name: "Микрофон".into(),
+                    kind: AudioChannelKind::Mic,
+                    fader_db: 0.0,
+                    muted: false,
+                    tracks: 0b1,
+                },
+            ],
+        }
     }
 }
 

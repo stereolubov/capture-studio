@@ -275,3 +275,4 @@ menu-scenes-undo = Отменить
 menu-scenes-redo = Повторить
 transition-fade-ms = Затухание · { $ms } мс
 hotkey-register-failed = Не удалось назначить глобальную клавишу { $key }: занята другим приложением
+audio-no-device = Устройство не подключено — канал ожидает его появления

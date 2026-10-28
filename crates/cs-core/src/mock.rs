@@ -138,6 +138,8 @@ impl MockEngine {
                 peak: [l, r],
                 rms: [l - 6.0, r - 6.0],
                 peak_hold: [l, r],
+                device_missing: false,
+                tracks: 0b1,
             }
         };
         let audio = vec![
@@ -409,6 +411,11 @@ impl Engine for MockEngine {
                 }
             }
             Command::SetPreviewEnabled(v) => st.preview_enabled = v,
+            Command::SetTracks { channel, tracks } => {
+                if let Some(c) = st.audio.get_mut(channel) {
+                    c.tracks = tracks;
+                }
+            }
             Command::ApplyProfile(p) => {
                 use crate::config::profile::EncoderKind;
                 let o = &mut st.output;

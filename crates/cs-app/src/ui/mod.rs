@@ -112,6 +112,7 @@ pub struct App {
     /// Текстура превью сцены в egui (регистрирует платформенный слой).
     pub preview_texture: Option<egui::TextureId>,
     pub preview_ui: preview::PreviewUi,
+    audio_dirty_since: Option<std::time::Instant>,
 }
 
 impl App {
@@ -134,6 +135,7 @@ impl App {
             applied: None,
             preview_texture: None,
             preview_ui: preview::PreviewUi::default(),
+            audio_dirty_since: None,
         }
     }
 
@@ -188,6 +190,35 @@ impl App {
 
     pub fn open_stats(&mut self) {
         self.overlays.stats = Some(stats::StatsUi::default());
+    }
+
+    /// Переносит фейдеры/mute/дорожки из движка в профиль и сохраняет через 1 с после изменения.
+    fn sync_audio_settings(&mut self) {
+        if !self.engine.state().live_engine {
+            return;
+        }
+        let audio = self.engine.state().audio.clone();
+        let mut changed = false;
+        for (cfg, ch) in self.profile.audio.channels.iter_mut().zip(audio.iter()) {
+            let fader_changed =
+                cfg.fader_db != ch.fader_db && !(cfg.fader_db.is_infinite() && ch.fader_db.is_infinite());
+            if fader_changed || cfg.muted != ch.muted || cfg.tracks != ch.tracks {
+                cfg.fader_db = ch.fader_db;
+                cfg.muted = ch.muted;
+                cfg.tracks = ch.tracks;
+                changed = true;
+            }
+        }
+        let now = std::time::Instant::now();
+        if changed {
+            self.audio_dirty_since = Some(now);
+        }
+        if self.audio_dirty_since.is_some_and(|t| now - t >= std::time::Duration::from_secs(1)) {
+            self.audio_dirty_since = None;
+            if let Err(e) = self.save_config() {
+                tracing::warn!("сохранение настроек аудио: {e}");
+            }
+        }
     }
 
     /// Применяет изменения языка/темы к egui.
@@ -254,6 +285,7 @@ impl App {
         self.sync_style(ctx);
         let events = self.engine.poll();
         self.handle_events(events);
+        self.sync_audio_settings();
         self.chrome = Chrome::default();
 
         let screen = ctx.content_rect();

@@ -151,8 +151,12 @@ dependencies = [
 name = "cs-audio"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "cs-core",
+ "parking_lot",
  "thiserror",
+ "tracing",
+ "windows",
 ]
 
 [[package]]

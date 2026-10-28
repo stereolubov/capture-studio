@@ -462,7 +462,9 @@ fn right_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
             painter.rect_filled(row, 0.0, p.hover);
         }
         let ty = y + 10.0;
-        w::text(&painter, pos2(left + PAD_X, ty), Align2::LEFT_TOP, &ch.name, theme::sans(theme::TEXT), p.fg);
+        let name_color = if ch.device_missing { p.warn } else { p.fg };
+        let resp = if ch.device_missing { resp.on_hover_text(app.i18n.t("audio-no-device")) } else { resp };
+        w::text(&painter, pos2(left + PAD_X, ty), Align2::LEFT_TOP, &ch.name, theme::sans(theme::TEXT), name_color);
         w::text(
             &painter,
             pos2(r.right() - PAD_X, ty),

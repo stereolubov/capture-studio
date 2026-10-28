@@ -4,10 +4,15 @@
 use super::scene_ops::{Effect, SceneEditor};
 use super::{EngineConfig, Shared};
 use crossbeam_channel::{Receiver, Sender};
+use cs_audio::engine::{AudioEngine, ChannelConfig};
+use cs_audio::mixer::ChannelControl;
+use cs_audio::wasapi::Direction;
 use cs_capture::{CaptureContext, Content, SourceState, VideoSource, enumerate};
+use cs_core::config::profile::AudioChannelKind;
 use cs_core::config::{self, Profile};
 use cs_core::geometry;
 use cs_core::model::{Scene, SceneCollection, SourceId, SourceKind};
+use cs_core::state::{AudioChannel, MonitorMode};
 use cs_core::state::{OutputStatus, OutputSummary, PreviewInfo, SceneView, SourceMeta, SourceView, Stats};
 use cs_core::{AppState, Command, Event};
 use cs_diag::process::ProcessMonitor;
@@ -193,6 +198,57 @@ struct Worker {
     second_start: Instant,
     seconds: u64,
     process: ProcessMonitor,
+    audio: Option<AudioEngine>,
+    /// Режим мониторинга по каналам (воспроизведение — позже в M2).
+    monitor: Vec<MonitorMode>,
+}
+
+/// Запуск аудиодвижка по каналам профиля.
+fn start_audio(profile: &Profile) -> Option<AudioEngine> {
+    let channels = profile
+        .audio
+        .channels
+        .iter()
+        .map(|c| ChannelConfig {
+            name: c.name.clone(),
+            direction: match c.kind {
+                AudioChannelKind::Desktop => Direction::Render,
+                AudioChannelKind::Mic => Direction::Capture,
+            },
+            device: match c.kind {
+                AudioChannelKind::Desktop => profile.audio.desktop_device.clone(),
+                AudioChannelKind::Mic => profile.audio.mic_device.clone(),
+            },
+            control: ChannelControl { fader_db: c.fader_db, muted: c.muted, tracks: c.tracks },
+        })
+        .collect();
+    match AudioEngine::start(channels) {
+        Ok(a) => Some(a),
+        Err(e) => {
+            tracing::error!("аудио не запущено: {e}");
+            None
+        }
+    }
+}
+
+fn audio_channels(audio: Option<&AudioEngine>, monitor: &[MonitorMode]) -> Vec<AudioChannel> {
+    audio.map_or_else(Vec::new, |a| {
+        a.status()
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| AudioChannel {
+                name: s.name,
+                fader_db: s.control.fader_db,
+                muted: s.control.muted,
+                monitor: monitor.get(i).copied().unwrap_or_default(),
+                peak: s.meter.peak,
+                rms: s.meter.rms,
+                peak_hold: s.meter.peak_hold,
+                device_missing: s.device.is_none(),
+                tracks: s.control.tracks,
+            })
+            .collect()
+    })
 }
 
 impl Worker {
@@ -223,6 +279,24 @@ impl Worker {
                 }
                 return;
             }
+            Command::SetFader { channel, db } => {
+                self.update_control(channel, |c| c.fader_db = db);
+                return;
+            }
+            Command::ToggleMute(channel) => {
+                self.update_control(channel, |c| c.muted = !c.muted);
+                return;
+            }
+            Command::SetTracks { channel, tracks } => {
+                self.update_control(channel, |c| c.tracks = tracks);
+                return;
+            }
+            Command::SetMonitor { channel, mode } => {
+                if let Some(m) = self.monitor.get_mut(channel) {
+                    *m = mode;
+                }
+                return;
+            }
             Command::StartStream | Command::StopStream | Command::StartRecording | Command::StopRecording => {
                 // Вывод — этапы M2/M3; UI сообщает об этом сам.
                 return;
@@ -248,6 +322,16 @@ impl Worker {
         }
         if fx.changed {
             self.dirty_since = Some(Instant::now());
+        }
+    }
+
+    fn update_control(&mut self, channel: usize, f: impl FnOnce(&mut ChannelControl)) {
+        if let Some(a) = &self.audio
+            && let Some(s) = a.status().get(channel)
+        {
+            let mut c = s.control;
+            f(&mut c);
+            a.set_control(channel, c);
         }
     }
 
@@ -310,7 +394,7 @@ impl Worker {
                 *p = Some((c.generation(), c.canvas().srv.clone()));
             }
         }
-        let state = build_state(
+        let mut state = build_state(
             &self.editor.collection,
             &self.sources,
             &self.profile,
@@ -320,6 +404,7 @@ impl Worker {
             self.editor.history.can_undo(),
             self.editor.history.can_redo(),
         );
+        state.audio = audio_channels(self.audio.as_ref(), &self.monitor);
         *self.shared.snapshot.lock() = Arc::new(state);
     }
 
@@ -458,7 +543,11 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         second_start: Instant::now(),
         seconds: 0,
         process: ProcessMonitor::new(),
+        audio: None,
+        monitor: Vec::new(),
     };
+    w.audio = start_audio(&w.profile);
+    w.monitor = vec![MonitorMode::Off; w.profile.audio.channels.len()];
     let ids: Vec<SourceId> = w.editor.collection.sources.keys().copied().collect();
     for id in ids {
         w.create_source(id);
