@@ -1,28 +1,34 @@
 """Ошибка A/V-синхронизации записи относительно журнала эталонного генератора syncgen."""
 import json
+import os
 import subprocess
 import sys
 
 import numpy as np
 
-FF = r"C:\codecs\ffmpeg\bin"
+# Папка с ffmpeg/ffprobe: переменная FFMPEG_DIR, иначе — из PATH.
+FF = os.environ.get("FFMPEG_DIR", "")
 path, events_path = sys.argv[1], sys.argv[2]
 events = [e for e in json.load(open(events_path, encoding="utf-8")) if e["video_actual"] is not None]
 
-info = json.loads(subprocess.check_output([FF + r"\ffprobe.exe", "-v", "error", "-show_streams", "-of", "json", path]))
+info = json.loads(subprocess.check_output([os.path.join(FF, "ffprobe"), "-v", "error", "-show_streams", "-of", "json", path]))
 a = next(s for s in info["streams"] if s["codec_type"] == "audio")
 a_start = float(a.get("start_time", 0))
 
 W, H, FPS = 96, 54, 60.0
-raw = subprocess.check_output([FF + r"\ffmpeg.exe", "-v", "error", "-i", path, "-an", "-vf", f"fps=60,scale={W}:{H},format=gray", "-f", "rawvideo", "-"])
+raw = subprocess.check_output([os.path.join(FF, "ffmpeg"), "-v", "error", "-i", path, "-an", "-vf", f"fps=60,scale={W}:{H},format=gray", "-f", "rawvideo", "-"])
 frames = np.frombuffer(raw, np.uint8).reshape(-1, H, W).astype(np.float32)
-var = frames.std(axis=0)
-mask = var >= np.percentile(var, 98)
+# Окно генератора почти всё время чёрное и изредка белое: такие пиксели не путаются с другим
+# движением на экране (видео, смена картинок). Если окна не нашлось — самые изменчивые пиксели.
+mask = (np.median(frames, axis=0) < 40) & (frames.max(axis=0) > 200)
+if mask.sum() < 4:
+    var = frames.std(axis=0)
+    mask = var >= np.percentile(var, 98)
 lum = frames[:, mask].mean(axis=1)
 thr = lum.min() + (lum.max() - lum.min()) * 0.5
 v_on = np.array([i / FPS for i in range(1, len(lum)) if lum[i] >= thr and lum[i - 1] < thr])
 
-pcm = subprocess.check_output([FF + r"\ffmpeg.exe", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
+pcm = subprocess.check_output([os.path.join(FF, "ffmpeg"), "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
 s = np.abs(np.frombuffer(pcm, np.int16).astype(np.float32))
 env = s[: len(s) // 48 * 48].reshape(-1, 48).max(axis=1)
 athr = env.max() * 0.3

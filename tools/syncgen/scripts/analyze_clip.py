@@ -1,14 +1,16 @@
 """Замер рассинхрона A/V в записи: вспышки (рост яркости кадра) против щелчков (огибающая звука)."""
 import json
+import os
 import subprocess
 import sys
 
 import numpy as np
 
-FF = r"C:\codecs\ffmpeg\bin"
+# Папка с ffmpeg/ffprobe: переменная FFMPEG_DIR, иначе — из PATH.
+FF = os.environ.get("FFMPEG_DIR", "")
 path = sys.argv[1]
 
-info = json.loads(subprocess.check_output([FF + r"\ffprobe.exe", "-v", "error", "-show_streams", "-of", "json", path]))
+info = json.loads(subprocess.check_output([os.path.join(FF, "ffprobe"), "-v", "error", "-show_streams", "-of", "json", path]))
 v = next(s for s in info["streams"] if s["codec_type"] == "video")
 a = next(s for s in info["streams"] if s["codec_type"] == "audio")
 num, den = map(int, v["avg_frame_rate"].split("/"))
@@ -19,7 +21,7 @@ a_start = float(a.get("start_time", 0))
 W, H = 64, 36
 # fps=60 раскладывает кадры по меткам времени (пропуски дублируются): время = индекс / 60.
 fps = 60.0
-raw = subprocess.check_output([FF + r"\ffmpeg.exe", "-v", "error", "-i", path, "-an", "-vf", f"fps=60,scale={W}:{H},format=gray", "-f", "rawvideo", "-"])
+raw = subprocess.check_output([os.path.join(FF, "ffmpeg"), "-v", "error", "-i", path, "-an", "-vf", f"fps=60,scale={W}:{H},format=gray", "-f", "rawvideo", "-"])
 frames = np.frombuffer(raw, np.uint8).reshape(-1, H, W).astype(np.float32)
 # Пиксели, которые меняются сильнее всего, — окно с вспышками.
 var = frames.std(axis=0)
@@ -28,7 +30,7 @@ lum = frames[:, mask].mean(axis=1)
 thr = lum.min() + (lum.max() - lum.min()) * 0.5
 v_on = [v_start + i / fps for i in range(1, len(lum)) if lum[i] >= thr and lum[i - 1] < thr]
 
-pcm = subprocess.check_output([FF + r"\ffmpeg.exe", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
+pcm = subprocess.check_output([os.path.join(FF, "ffmpeg"), "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
 s = np.abs(np.frombuffer(pcm, np.int16).astype(np.float32))
 win = 48  # 1 мс
 env = s[: len(s) // win * win].reshape(-1, win).max(axis=1)
