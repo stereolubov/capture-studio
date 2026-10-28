@@ -33,6 +33,18 @@ pub struct RecordingConfig {
     pub audio_kbps: u32,
     /// Маска дорожек аудио (бит 0 — дорожка 1).
     pub tracks: u8,
+    /// После остановки перепаковать MKV в MP4.
+    pub remux: bool,
+    /// Удалить MKV после успешного ремукса.
+    pub delete_source: bool,
+}
+
+/// Пауза записи: суммарное время пауз вычитается из меток видео и аудио.
+#[derive(Default)]
+pub struct PauseState {
+    pub paused: AtomicBool,
+    /// Суммарная длительность пауз, 100 нс.
+    pub total: std::sync::atomic::AtomicI64,
 }
 
 /// Счётчики записи для статистики.
@@ -52,6 +64,19 @@ pub struct Recording {
     stop: Arc<AtomicBool>,
     threads: Vec<std::thread::JoinHandle<()>>,
     pub stats: Arc<RecordStats>,
+    pub pause: Arc<PauseState>,
+    pause_started: Option<Ticks>,
+    remux: bool,
+    delete_source: bool,
+    /// Длительность кадра, 100 нс; метки видео ставятся на эту сетку.
+    frame_duration: i64,
+    last_frame_index: Option<i64>,
+}
+
+/// Номер кадра на сетке частоты: дрожание времени тика (±пара мс) не попадает в метки,
+/// а настоящие пропуски кадров остаются пропусками.
+fn grid_index(pts: i64, frame_duration: i64) -> i64 {
+    (pts + frame_duration / 2).div_euclid(frame_duration.max(1))
 }
 
 fn to_100ns(t: Ticks, start: Ticks) -> i64 {
@@ -75,6 +100,7 @@ impl Recording {
         let start_ticks = Ticks::now();
         let stop = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(RecordStats::default());
+        let pause = Arc::new(PauseState::default());
         let (video_tx, video_rx) = bounded::<(ID3D11Texture2D, i64)>(4);
         let (mux_tx, mux_rx) = unbounded::<MuxMsg>();
         let tracks: Vec<usize> = (0..TRACKS).filter(|t| cfg.tracks & (1 << t) != 0).collect();
@@ -135,6 +161,7 @@ impl Recording {
             let astop = stop.clone();
             let tr = tracks.clone();
             let kbps = cfg.audio_kbps;
+            let apause = pause.clone();
             threads.push(std::thread::Builder::new().name("encoder-audio".into()).spawn(move || {
                 let mut encs: Vec<MfAacEncoder> = Vec::new();
                 for _ in &tr {
@@ -149,10 +176,10 @@ impl Recording {
                 let mut out = Vec::new();
                 while !astop.load(Ordering::Acquire) {
                     let Ok(block) = rx.recv_timeout(std::time::Duration::from_millis(50)) else { continue };
-                    if block.pts < start_ticks {
+                    if block.pts < start_ticks || apause.paused.load(Ordering::Acquire) {
                         continue;
                     }
-                    let pts = to_100ns(block.pts, start_ticks);
+                    let pts = to_100ns(block.pts, start_ticks) - apause.total.load(Ordering::Acquire);
                     for (k, (enc, t)) in encs.iter_mut().zip(&tr).enumerate() {
                         if let Err(e) = enc.encode(&block.block.tracks[*t], pts, &mut out) {
                             tracing::warn!("AAC: {e}");
@@ -193,6 +220,12 @@ impl Recording {
             stop,
             threads,
             stats,
+            frame_duration: vs.frame_duration(),
+            last_frame_index: None,
+            pause,
+            pause_started: None,
+            remux: cfg.remux,
+            delete_source: cfg.delete_source,
         })
     }
 
@@ -204,13 +237,46 @@ impl Recording {
         canvas_size: (u32, u32),
         at: Ticks,
     ) {
+        if self.pause.paused.load(Ordering::Acquire) {
+            return;
+        }
+        let elapsed = to_100ns(at, self.start_ticks) - self.pause.total.load(Ordering::Acquire);
+        let index = grid_index(elapsed, self.frame_duration);
+        if self.last_frame_index.is_some_and(|last| index <= last) {
+            return; // два тика попали в один слот сетки — второй не нужен
+        }
+        self.last_frame_index = Some(index);
+        let pts = index * self.frame_duration;
         let tex = self.converter.convert(gpu, canvas, canvas_size);
-        let pts = to_100ns(at, self.start_ticks);
         if let Some(tx) = &self.video_tx
             && tx.try_send((tex, pts)).is_err()
         {
             self.stats.dropped_encoder.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Пауза / продолжение. Возвращает новое состояние (`true` — на паузе).
+    pub fn toggle_pause(&mut self) -> bool {
+        let now = Ticks::now();
+        match self.pause_started.take() {
+            Some(start) => {
+                self.pause.total.fetch_add(to_100ns(now, start), Ordering::AcqRel);
+                self.pause.paused.store(false, Ordering::Release);
+                false
+            }
+            None => {
+                self.pause_started = Some(now);
+                self.pause.paused.store(true, Ordering::Release);
+                true
+            }
+        }
+    }
+
+    /// Время записи без пауз, с.
+    pub fn elapsed_secs(&self) -> u64 {
+        let paused = self.pause.total.load(Ordering::Acquire) / 10_000_000
+            + self.pause_started.map_or(0, |s| (Ticks::now().seconds_since(s)) as i64);
+        (self.started.elapsed().as_secs() as i64 - paused).max(0) as u64
     }
 
     /// Остановка с ожиданием финализации (выход из приложения).
@@ -221,21 +287,54 @@ impl Recording {
             let _ = t.join();
         }
         tracing::info!("запись завершена при выходе: {}", self.path.display());
+        // Ремукс при выходе не выполняется (может занять время): MKV остаётся, его можно перепаковать позже.
     }
 
     /// Асинхронная остановка: событие `RecordingStopped` придёт после финализации файла.
-    pub fn stop(mut self, events: Sender<Event>) {
+    pub fn stop(mut self, events: Sender<Event>, progress: Arc<parking_lot::Mutex<Option<f32>>>) {
         self.stop.store(true, Ordering::Release);
         self.video_tx = None;
         let path = self.path.clone();
         let threads = std::mem::take(&mut self.threads);
+        let (remux, delete_source) = (self.remux, self.delete_source);
         let _ = std::thread::Builder::new().name("recording-finish".into()).spawn(move || {
             for t in threads {
                 let _ = t.join();
             }
             tracing::info!("запись завершена: {}", path.display());
             let _ = events.send(Event::RecordingStopped { path: path.display().to_string() });
+            if remux {
+                remux_file(&path, delete_source, &events, &progress);
+            }
         });
+    }
+}
+
+/// Авто-ремукс MKV → MP4 (§10.1): исходник удаляется только при успехе и включённой опции.
+fn remux_file(
+    mkv: &std::path::Path,
+    delete_source: bool,
+    events: &Sender<Event>,
+    progress: &parking_lot::Mutex<Option<f32>>,
+) {
+    let mp4 = mkv.with_extension("mp4");
+    *progress.lock() = Some(0.0);
+    let t = Instant::now();
+    let result = cs_output::mp4::remux(mkv, &mp4, |p| *progress.lock() = Some(p));
+    *progress.lock() = None;
+    match result {
+        Ok(()) => {
+            tracing::info!("ремукс за {:.1} с: {}", t.elapsed().as_secs_f32(), mp4.display());
+            if delete_source && let Err(e) = std::fs::remove_file(mkv) {
+                tracing::warn!("не удалось удалить {}: {e}", mkv.display());
+            }
+            let _ = events.send(Event::RemuxFinished { path: mp4.display().to_string() });
+        }
+        Err(e) => {
+            tracing::error!("ремукс {}: {e}", mkv.display());
+            let _ = std::fs::remove_file(mp4.with_extension("mp4.part"));
+            let _ = events.send(Event::Error(format!("ремукс: {e} (MKV сохранён)")));
+        }
     }
 }
 
@@ -319,4 +418,18 @@ pub fn file_name(ext: &str) -> String {
     // SAFETY: чтение локального времени.
     let t = unsafe { GetLocalTime() };
     format!("{:04}-{:02}-{:02} {:02}-{:02}-{:02}.{ext}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grid_index;
+
+    #[test]
+    fn jitter_snaps_to_frame_grid() {
+        let fd = 166_667; // 60 fps
+        assert_eq!(grid_index(0, fd), 0);
+        assert_eq!(grid_index(166_667 + 20_000, fd), 1); // +2 мс дрожания
+        assert_eq!(grid_index(2 * 166_667 - 30_000, fd), 2);
+        assert_eq!(grid_index(5 * 166_667, fd), 5);
+    }
 }

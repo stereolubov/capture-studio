@@ -25,6 +25,23 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const AUTOSAVE_DELAY: Duration = Duration::from_secs(1);
+const WARN_FREE_MB: u64 = 5 * 1024;
+const STOP_FREE_MB: u64 = 500;
+
+/// Свободное место на диске папки (ближайший существующий родитель), МБ.
+fn free_mb(dir: &std::path::Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut p = dir.to_path_buf();
+    while !p.exists() {
+        p = p.parent()?.to_path_buf();
+    }
+    let wide: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut free = 0u64;
+    // SAFETY: нуль-терминированная строка пути; выходные указатели — локальные.
+    unsafe { GetDiskFreeSpaceExW(windows::core::PCWSTR(wide.as_ptr()), Some(&mut free), None, None).ok()? };
+    Some(free / (1024 * 1024))
+}
 
 /// Размер холста: из профиля или по основному монитору (§7.3).
 fn canvas_size(profile: &Profile) -> (u32, u32) {
@@ -156,6 +173,7 @@ fn build_state(
         can_undo,
         can_redo,
         live_engine: true,
+        remux_progress: None,
     }
 }
 
@@ -202,6 +220,9 @@ struct Worker {
     audio: Option<AudioEngine>,
     recording: Option<Recording>,
     recordings_dir: PathBuf,
+    remux_progress: Arc<parking_lot::Mutex<Option<f32>>>,
+    disk_checked: Option<Instant>,
+    disk_warned: bool,
     /// Режим мониторинга по каналам (воспроизведение — позже в M2).
     monitor: Vec<MonitorMode>,
 }
@@ -310,7 +331,14 @@ impl Worker {
             }
             Command::StopRecording => {
                 if let Some(r) = self.recording.take() {
-                    r.stop(self.events.clone());
+                    r.stop(self.events.clone(), self.remux_progress.clone());
+                }
+                return;
+            }
+            Command::TogglePauseRecording => {
+                if let Some(r) = self.recording.as_mut() {
+                    let paused = r.toggle_pause();
+                    tracing::info!("запись: {}", if paused { "пауза" } else { "продолжена" });
                 }
                 return;
             }
@@ -346,7 +374,14 @@ impl Worker {
         if self.recording.is_some() {
             return;
         }
-        use cs_core::config::profile::{ColorRange, ColorSpace, RateControl as Rc};
+        use cs_core::config::profile::{ColorRange, ColorSpace, RateControl as Rc, RecordFormat};
+        if let Some(free) = free_mb(&self.recordings_dir)
+            && free < STOP_FREE_MB
+        {
+            let _ = self.events.send(Event::DiskSpaceStopped);
+            return;
+        }
+        self.disk_warned = false;
         let p = &self.profile;
         let (ow, oh) = p.video.output.unwrap_or(self.canvas);
         let video = cs_encode::VideoSettings {
@@ -371,6 +406,12 @@ impl Worker {
             },
             audio_kbps: p.output.audio_bitrate_kbps,
             tracks: p.output.record_tracks,
+            remux: matches!(
+                p.output.record_format,
+                RecordFormat::MkvRemuxMp4 | RecordFormat::Mp4 | RecordFormat::FragmentedMp4
+            ),
+            // «MP4» — то же, что MKV с ремуксом, но без исходника.
+            delete_source: p.output.record_format != RecordFormat::MkvRemuxMp4 || p.output.delete_mkv_after_remux,
         };
         let audio = self.audio.as_ref().map(|a| a.subscribe());
         match Recording::start(&self.gpu, cfg, audio, self.events.clone()) {
@@ -383,6 +424,25 @@ impl Worker {
                 tracing::error!("запись не начата: {e:#}");
                 let _ = self.events.send(Event::Error(format!("запись не начата: {e:#}")));
             }
+        }
+    }
+
+    /// Свободное место во время записи (раз в 5 с): < 5 ГБ — предупреждение, < 500 МБ — остановка.
+    fn check_disk(&mut self) {
+        if self.recording.is_none() || self.disk_checked.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+            return;
+        }
+        self.disk_checked = Some(Instant::now());
+        let Some(free) = free_mb(&self.recordings_dir) else { return };
+        if free < STOP_FREE_MB {
+            tracing::warn!("мало места ({free} МБ): запись остановлена");
+            if let Some(r) = self.recording.take() {
+                r.stop(self.events.clone(), self.remux_progress.clone());
+            }
+            let _ = self.events.send(Event::DiskSpaceStopped);
+        } else if free < WARN_FREE_MB && !self.disk_warned {
+            self.disk_warned = true;
+            let _ = self.events.send(Event::DiskSpaceLow { free_mb: free });
         }
     }
 
@@ -470,9 +530,11 @@ impl Worker {
             self.editor.history.can_redo(),
         );
         state.audio = audio_channels(self.audio.as_ref(), &self.monitor);
+        state.remux_progress = *self.remux_progress.lock();
         if let Some(r) = &self.recording {
             state.record = OutputStatus::Live;
-            state.record_elapsed_secs = r.started.elapsed().as_secs();
+            state.record_paused = r.pause.paused.load(std::sync::atomic::Ordering::Acquire);
+            state.record_elapsed_secs = r.elapsed_secs();
             state.stats.dropped_encoder = r.stats.dropped_encoder.load(std::sync::atomic::Ordering::Relaxed);
         }
         *self.shared.snapshot.lock() = Arc::new(state);
@@ -615,6 +677,9 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         process: ProcessMonitor::new(),
         audio: None,
         recording: None,
+        remux_progress: Arc::new(parking_lot::Mutex::new(None)),
+        disk_checked: None,
+        disk_warned: false,
         recordings_dir: std::env::var_os("USERPROFILE")
             .map(PathBuf::from)
             .unwrap_or_default()
@@ -646,6 +711,7 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         w.tick();
         w.update_stats(interval);
         w.publish();
+        w.check_disk();
         if w.dirty_since.is_some_and(|t| t.elapsed() >= AUTOSAVE_DELAY) {
             w.save_now(true);
         }

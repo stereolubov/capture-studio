@@ -204,6 +204,8 @@ pub struct AppState {
     pub can_redo: bool,
     /// Движок настоящий (не мок): старт трансляции/записи появится в M2–M3.
     pub live_engine: bool,
+    /// Прогресс ремукса MKV → MP4 (0…1), пока он идёт.
+    pub remux_progress: Option<f32>,
 }
 
 /// Команды от UI (и горячих клавиш) к движку.
@@ -253,6 +255,8 @@ pub enum Command {
     SetTransition(Transition),
     /// Папка записей (передаётся UI при старте и после изменения настроек).
     SetRecordingsDir(std::path::PathBuf),
+    /// Пауза / продолжение записи (MKV).
+    TogglePauseRecording,
     StartStream,
     StopStream,
     StartRecording,
@@ -298,6 +302,12 @@ pub enum Event {
     RecordingStopped {
         path: String,
     },
+    /// Мало места на диске записей (предупреждение при < 5 ГБ).
+    DiskSpaceLow {
+        free_mb: u64,
+    },
+    /// Запись остановлена: свободно меньше 500 МБ (файл сохранён).
+    DiskSpaceStopped,
     RemuxFinished {
         path: String,
     },

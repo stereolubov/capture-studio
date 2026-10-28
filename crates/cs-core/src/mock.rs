@@ -194,6 +194,7 @@ impl MockEngine {
                 can_undo: false,
                 can_redo: false,
                 live_engine: false,
+                remux_progress: None,
             },
             animate,
             last_tick: Ticks::now(),
@@ -369,6 +370,7 @@ impl Engine for MockEngine {
             }
             Command::SetTransition(t) => st.transition = t,
             Command::SetRecordingsDir(_) => {}
+            Command::TogglePauseRecording => st.record_paused = !st.record_paused,
             // Редактирование сцен в моке не поддерживается: только визуальная оболочка.
             Command::AddSource { .. }
             | Command::UpdateSource { .. }

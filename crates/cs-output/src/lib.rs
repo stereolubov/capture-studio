@@ -3,6 +3,8 @@
 
 pub mod interleave;
 pub mod mkv;
+pub mod mkv_read;
+pub mod mp4;
 
 /// Политика переподключения (§10.2): до 25 попыток, задержка 2, 4, 8… максимум 30 с.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

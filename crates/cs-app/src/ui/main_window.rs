@@ -534,8 +534,18 @@ fn right_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
     } else {
         app.i18n.t("btn-start-record")
     };
-    if w::button(ui, rec_rect, "btn-record", &rec_label, ButtonKind::Outline, !st.record.is_transitional(), p).clicked()
-    {
+    let rec_resp =
+        w::button(ui, rec_rect, "btn-record", &rec_label, ButtonKind::Outline, !st.record.is_transitional(), p);
+    if st.record.is_active() {
+        let label = app.i18n.t(if st.record_paused { "record-resume" } else { "record-pause" });
+        rec_resp.context_menu(|ui| {
+            if ui.button(label).clicked() {
+                app.send(Command::TogglePauseRecording);
+                ui.close();
+            }
+        });
+    }
+    if rec_resp.clicked() {
         if st.record.is_active() {
             app.send(Command::StopRecording);
         } else {
@@ -565,7 +575,15 @@ fn status_bar(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
     };
     let fps_color = level_color(stats.fps < stats.target_fps * 0.95, false);
     let drop_color = level_color(drop_pct > 1.0, drop_pct > 5.0);
-    let rec = if st.record.is_active() { format_hms(st.record_elapsed_secs) } else { "—".into() };
+    let rec = if let Some(p) = st.remux_progress {
+        app.i18n.t_args("status-remux", &[("p", s(format!("{:.0}", p * 100.0)))])
+    } else if st.record.is_active() && st.record_paused {
+        format!("⏸ {}", format_hms(st.record_elapsed_secs))
+    } else if st.record.is_active() {
+        format_hms(st.record_elapsed_secs)
+    } else {
+        "—".into()
+    };
     let items: [(String, String, Color32); 6] = [
         (app.i18n.t("status-cpu"), format!("{:.0}%", stats.cpu_percent), p.fg),
         (

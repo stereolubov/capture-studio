@@ -91,6 +91,8 @@ pub struct OutputSettings {
     /// Битовая маска дорожек записи (1–6).
     pub record_tracks: u8,
     pub audio_bitrate_kbps: u32,
+    /// Удалять MKV после успешного ремукса в MP4 (§10.1, по умолчанию выкл.).
+    pub delete_mkv_after_remux: bool,
 }
 
 impl Default for OutputSettings {
@@ -110,6 +112,7 @@ impl Default for OutputSettings {
             separate_record_encoder: false,
             record_tracks: 0b1,
             audio_bitrate_kbps: 160,
+            delete_mkv_after_remux: false,
         }
     }
 }

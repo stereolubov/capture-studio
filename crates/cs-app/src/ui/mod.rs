@@ -265,6 +265,11 @@ impl App {
                 Event::RecordingStopped { path } => {
                     (self.i18n.t_args("toast-record-stopped", &[("path", s(path))]), toasts::Kind::Info)
                 }
+                Event::DiskSpaceLow { free_mb } => (
+                    self.i18n.t_args("toast-disk-low", &[("gb", s(format!("{:.1}", free_mb as f64 / 1024.0)))]),
+                    toasts::Kind::Warn,
+                ),
+                Event::DiskSpaceStopped => (self.i18n.t("toast-disk-stopped"), toasts::Kind::Error),
                 Event::RemuxFinished { path } => {
                     (self.i18n.t_args("toast-remux-done", &[("path", s(path))]), toasts::Kind::Info)
                 }
