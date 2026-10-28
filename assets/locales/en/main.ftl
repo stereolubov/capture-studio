@@ -282,3 +282,4 @@ status-remux = remux { $p }%
 record-pause = Pause recording
 record-resume = Resume recording
 mixer-sync-offset = Sync offset
+unit-ms = ms

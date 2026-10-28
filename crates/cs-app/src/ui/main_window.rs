@@ -584,23 +584,49 @@ fn status_bar(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
     } else {
         "—".into()
     };
-    let items: [(String, String, Color32); 6] = [
-        (app.i18n.t("status-cpu"), format!("{:.0}%", stats.cpu_percent), p.fg),
+    let kbps = app.i18n.t("unit-kbps");
+    // Третье поле — шаблон самого широкого типичного значения: под него резервируется место,
+    // чтобы смена разрядности (6% → 10%) не сдвигала соседние счётчики.
+    // Поля: подпись, значение, шаблон ширины слота, цвет, выравнивание. Числа прижаты к правому
+    // краю слота (разряды друг под другом), составные значения — к левому, рядом с подписью.
+    let items: [(String, String, String, Color32, bool); 6] = [
+        (app.i18n.t("status-cpu"), format!("{:.0}%", stats.cpu_percent), "100%".into(), p.fg, true),
         (
             app.i18n.t("status-gpu"),
             if stats.gpu_percent.is_finite() { format!("{:.0}%", stats.gpu_percent) } else { "—".into() },
+            "100%".into(),
             p.fg,
+            true,
         ),
-        (app.i18n.t("status-fps"), format!("{:.1}", stats.fps), fps_color),
-        (app.i18n.t("status-bitrate"), format!("{:.0} {}", stats.bitrate_kbps, app.i18n.t("unit-kbps")), p.fg),
-        (app.i18n.t("status-drops"), format!("{} ({:.1}%)", stats.dropped_frames, drop_pct), drop_color),
-        (app.i18n.t("status-rec"), rec, p.fg),
+        (app.i18n.t("status-fps"), format!("{:.1}", stats.fps), "000.0".into(), fps_color, true),
+        (
+            app.i18n.t("status-bitrate"),
+            format!("{:.0} {kbps}", stats.bitrate_kbps),
+            format!("00000 {kbps}"),
+            p.fg,
+            true,
+        ),
+        (
+            app.i18n.t("status-drops"),
+            format!("{} ({:.1}%)", stats.dropped_frames, drop_pct),
+            "0000 (00.0%)".into(),
+            drop_color,
+            false,
+        ),
+        (app.i18n.t("status-rec"), rec, "⏸ 00:00:00".into(), p.fg, false),
     ];
     let mut x = r.left() + 16.0;
-    for (k, v, vc) in items {
+    for (k, v, template, vc, align_right) in items {
         let t = w::text(&painter, pos2(x, mid), Align2::LEFT_CENTER, &format!("{k} "), font.clone(), p.mute);
-        let t2 = w::text(&painter, pos2(t.right(), mid), Align2::LEFT_CENTER, &v, font.clone(), vc);
-        x = t2.right() + 28.0;
+        let slot = painter.layout_no_wrap(template, font.clone(), vc).size().x;
+        let width = painter.layout_no_wrap(v.clone(), font.clone(), vc).size().x;
+        let right = t.right() + slot.max(width);
+        if align_right {
+            w::text(&painter, pos2(right, mid), Align2::RIGHT_CENTER, &v, font.clone(), vc);
+        } else {
+            w::text(&painter, pos2(t.right(), mid), Align2::LEFT_CENTER, &v, font.clone(), vc);
+        }
+        x = right + 28.0;
     }
 
     let conn = match &st.stream {

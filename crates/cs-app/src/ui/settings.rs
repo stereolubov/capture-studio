@@ -226,6 +226,12 @@ fn apply_changes(app: &mut App, d: &SettingsDialog) {
     app.settings = d.settings.clone();
     app.profile = d.profile.clone();
     app.send(Command::ApplyProfile(Box::new(d.profile.clone())));
+    let offsets: Vec<(usize, i32)> = d.profile.audio.channels.iter().map(|c| c.sync_offset_ms).enumerate().collect();
+    for (channel, ms) in offsets {
+        if app.engine.state().audio.get(channel).is_some_and(|c| c.sync_offset_ms != ms) {
+            app.send(Command::SetSyncOffset { channel, ms });
+        }
+    }
     let dir = app.recordings_dir();
     app.send(Command::SetRecordingsDir(dir));
     let msg = match app.save_config() {
@@ -249,6 +255,13 @@ struct Form {
 impl Form {
     fn box_h(&self) -> f32 {
         1.0 + 7.0 + self.lh12m + 7.0 + 1.0
+    }
+
+    /// Заголовок группы полей.
+    fn caption(&mut self, text: &str) {
+        self.y += 6.0;
+        w::caption(&self.painter, pos2(self.x, self.y), Align2::LEFT_TOP, text, &self.p);
+        self.y += self.lh12m + 6.0;
     }
 
     /// Подпись и рамка поля; возвращает прямоугольник рамки.
@@ -591,6 +604,38 @@ fn audio_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
         let mut sel = 0;
         f.dropdown(ui, id, &t(key), &dflt, &mut sel, true);
     }
+    // Смещение синхронизации каналов (§8.2): «+» — звук канала позже картинки.
+    const IDS: [&str; 8] = ["sync0", "sync1", "sync2", "sync3", "sync4", "sync5", "sync6", "sync7"];
+    f.caption(&t("mixer-sync-offset"));
+    for (i, id) in IDS.iter().enumerate().take(d.profile.audio.channels.len()) {
+        let ch = &d.profile.audio.channels[i];
+        let label = ch.name.clone();
+        let v = signed_field(f, ui, d, id, &label, ch.sync_offset_ms, &t("unit-ms"));
+        d.profile.audio.channels[i].sync_offset_ms = v.clamp(-950, 2000);
+    }
+}
+
+/// Целое со знаком (поле ввода).
+fn signed_field(
+    form: &mut Form,
+    ui: &mut Ui,
+    d: &mut SettingsDialog,
+    id: &'static str,
+    label: &str,
+    value: i32,
+    unit: &str,
+) -> i32 {
+    let buf = d.buffers.entry(id).or_insert_with(|| value.to_string());
+    if !ui.ctx().memory(|m| m.has_focus(Id::unique(("field", id)))) {
+        *buf = value.to_string();
+    }
+    let mut b = buf.clone();
+    form.text(ui, &mut b, id, label, unit, true, false);
+    let negative = b.starts_with('-');
+    b.retain(|c| c.is_ascii_digit());
+    let parsed = b.parse::<i32>().ok().map(|v| if negative { -v } else { v });
+    d.buffers.insert(id, if negative { format!("-{b}") } else { b });
+    parsed.unwrap_or(if negative { value.min(0) } else { value })
 }
 
 const RESOLUTIONS: [Option<(u32, u32)>; 5] =
