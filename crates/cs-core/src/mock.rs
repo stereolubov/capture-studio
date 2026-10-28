@@ -140,6 +140,7 @@ impl MockEngine {
                 peak_hold: [l, r],
                 device_missing: false,
                 tracks: 0b1,
+                sync_offset_ms: 0,
             }
         };
         let audio = vec![
@@ -414,6 +415,11 @@ impl Engine for MockEngine {
                 }
             }
             Command::SetPreviewEnabled(v) => st.preview_enabled = v,
+            Command::SetSyncOffset { channel, ms } => {
+                if let Some(c) = st.audio.get_mut(channel) {
+                    c.sync_offset_ms = ms;
+                }
+            }
             Command::SetTracks { channel, tracks } => {
                 if let Some(c) = st.audio.get_mut(channel) {
                     c.tracks = tracks;

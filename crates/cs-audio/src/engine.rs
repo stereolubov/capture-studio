@@ -127,6 +127,12 @@ fn mmcss_pro_audio() {
     }
 }
 
+/// Начальная задержка шкалы микшера (40 мс): очередь WASAPI + опрос + компенсация вывода.
+const INITIAL_DELAY_100NS: i64 = 400_000;
+const MAX_DELAY_100NS: i64 = 5_000_000;
+const DELAY_STEP_100NS: i64 = 50_000;
+const BLOCK_100NS: i64 = BLOCK_FRAMES as i64 * 10_000_000 / SAMPLE_RATE as i64;
+
 fn mixer_loop(sources: Vec<Arc<SourceShared>>, shared: Arc<Shared>) {
     mmcss_pro_audio();
     let mut mixer = Mixer::new(sources.len());
@@ -134,8 +140,12 @@ fn mixer_loop(sources: Vec<Arc<SourceShared>>, shared: Arc<Shared>) {
     let start_ticks = Ticks::now();
     let block = Duration::from_secs_f64(BLOCK_FRAMES as f64 / f64::from(SAMPLE_RATE));
     let freq = Ticks::frequency();
-    // Сглаженная задержка «захват → микшер», тики QPC.
-    let mut latency = 0.0f64;
+    let to_100ns = |t: i64| (i128::from(t) * 10_000_000 / i128::from(freq)) as i64;
+    // Задержка шкалы микшера относительно часов, 100 нс: в блок с меткой T попадает звук,
+    // захваченный в момент T (§5.2 п.4). Растёт, если какому-то источнику её не хватает.
+    let mut delay: i64 = INITIAL_DELAY_100NS;
+    // Конец очереди источника на прошлом блоке: нехватка учитывается, только пока данные идут.
+    let mut prev_tail: Vec<Option<u64>> = vec![None; sources.len()];
     // Очередь каналов накапливается перед первым блоком: 20 мс запаса против рывков опроса.
     std::thread::sleep(Duration::from_millis(20));
     while !shared.stop.load(Ordering::Acquire) {
@@ -145,32 +155,32 @@ fn mixer_loop(sources: Vec<Arc<SourceShared>>, shared: Arc<Shared>) {
                 ch.control = *c;
             }
         }
+        let scheduled =
+            Ticks(start_ticks.0 + (mixer.index() as i64) * freq * BLOCK_FRAMES as i64 / i64::from(SAMPLE_RATE));
+        let now = to_100ns(scheduled.0);
         let mut guards: Vec<_> = sources.iter().map(|s| s.queue.lock()).collect();
-        // Время захвата начала блока: конец очереди минус её длина (по каналу с известным временем).
-        let capture_time = guards.iter().zip(sources.iter()).find_map(|(q, s)| {
-            let end = s.queue_end_qpc.load(Ordering::Acquire);
-            (end != 0 && !q.is_empty()).then(|| end as i64 - (q.len() / 2) as i64 * 10_000_000 / i64::from(SAMPLE_RATE))
-        });
-        let mut queues: Vec<&mut std::collections::VecDeque<f32>> = guards.iter_mut().map(|g| &mut **g).collect();
-        let mixed = mixer.mix(&mut queues);
+        // Хватает ли задержки: у активного источника к моменту блока должен быть звук до конца
+        // блока (с учётом смещения канала). Не хватает — шкала сдвигается позже (разовый скачок).
+        for (i, (q, ch)) in guards.iter().zip(mixer.channels.iter()).enumerate() {
+            let tail = q.tail_time();
+            let streaming = tail.is_some() && prev_tail[i].is_some_and(|p| tail > Some(p));
+            prev_tail[i] = tail;
+            if let Some(tail) = tail.filter(|_| streaming) {
+                let need = now - tail as i64 + BLOCK_100NS - i64::from(ch.control.sync_offset_ms.min(0)) * 10_000;
+                if need > delay && need < MAX_DELAY_100NS {
+                    delay = (need + DELAY_STEP_100NS - 1) / DELAY_STEP_100NS * DELAY_STEP_100NS;
+                    tracing::info!("аудио: задержка шкалы микшера увеличена до {} мс (канал {i})", delay / 10_000);
+                }
+            }
+        }
+        let target = (now - delay) as u64;
+        let mut queues: Vec<&mut crate::mixer::AudioQueue> = guards.iter_mut().map(|g| &mut **g).collect();
+        let mixed = mixer.mix_aligned(&mut queues, Some(target));
         drop(queues);
         drop(guards);
         *shared.meters.lock() = mixer.channels.iter().map(|c| c.meter).collect();
-        let scheduled =
-            Ticks(start_ticks.0 + (mixed.index as i64) * freq * BLOCK_FRAMES as i64 / i64::from(SAMPLE_RATE));
-        // Метка — время захвата сэмплов, а не момент микширования (§5.2 п.4). Разница (задержка
-        // очереди) сглаживается, чтобы метки блоков шли равномерно.
-        if let Some(cap) = capture_time {
-            let cap_ticks = i128::from(cap) * i128::from(freq) / 10_000_000;
-            let lag = (i128::from(scheduled.0) - cap_ticks) as f64;
-            if (0.0..freq as f64 * 0.5).contains(&lag) {
-                latency = if latency == 0.0 { lag } else { latency * 0.98 + lag * 0.02 };
-            }
-        }
-        let pts = Ticks(scheduled.0 - latency as i64);
-        if mixed.index % 1000 == 500 {
-            tracing::info!("аудио: задержка «захват → микшер» {:.1} мс", latency * 1000.0 / freq as f64);
-        }
+        // Метка блока — время захвата его звука.
+        let pts = Ticks(scheduled.0 - (i128::from(delay) * i128::from(freq) / 10_000_000) as i64);
         let timed = Arc::new(TimedBlock { pts, block: mixed });
         shared.subscribers.lock().retain(|tx| tx.send(timed.clone()).is_ok());
 

@@ -281,3 +281,4 @@ toast-disk-stopped = Recording stopped: less than 500 MB left (file saved)
 status-remux = remux { $p }%
 record-pause = Pause recording
 record-resume = Resume recording
+mixer-sync-offset = Sync offset

@@ -4,9 +4,9 @@
 //! не играет), преобразование в float32 стерео 48 кГц, запись в очередь канала.
 //! Устройство по умолчанию отслеживается раз в 2 с; потеря устройства — переподключение.
 
+use crate::mixer::AudioQueue;
 use crate::resample::Resampler;
 use parking_lot::Mutex;
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -101,24 +101,6 @@ pub fn default_device(direction: Direction) -> Option<DeviceInfo> {
     Some(DeviceInfo { id: device_id(&d), name: device_name(&d) })
 }
 
-/// Задержка вывода устройства (shared mode), 100 нс: задержка потока + период движка.
-fn render_latency(dev: &IMMDevice) -> u64 {
-    // SAFETY: временный клиент; формат освобождается CoTaskMemFree.
-    unsafe {
-        let Ok(client) = dev.Activate::<IAudioClient>(CLSCTX_ALL, None) else { return 0 };
-        let Ok(fmt) = client.GetMixFormat() else { return 0 };
-        let mut default_period = 0i64;
-        let _ = client.GetDevicePeriod(Some(&mut default_period), None);
-        let init = client.Initialize(AUDCLNT_SHAREMODE_SHARED, 0, default_period, 0, fmt, None);
-        CoTaskMemFree(Some(fmt as *const _));
-        if init.is_err() {
-            return default_period.max(0) as u64 * 2;
-        }
-        let stream = client.GetStreamLatency().unwrap_or(0).max(0) as u64;
-        stream + default_period.max(0) as u64
-    }
-}
-
 /// Формат данных устройства.
 #[derive(Clone, Copy)]
 enum SampleFormat {
@@ -134,9 +116,6 @@ struct Stream {
     channels: usize,
     resampler: Resampler,
     device_id: String,
-    rate: u32,
-    /// Добавка к меткам времени, 100 нс (задержка вывода для loopback).
-    output_latency: u64,
 }
 
 fn open(direction: Direction, device: Option<&str>) -> windows::core::Result<(Stream, String)> {
@@ -172,20 +151,14 @@ fn open(direction: Direction, device: Option<&str>) -> windows::core::Result<(St
         CoTaskMemFree(Some(fmt_ptr as *const _));
         r?;
         let capture: IAudioCaptureClient = client.GetService()?;
-        // Loopback отдаёт звук до вывода на устройство: время, когда его слышно, позже на
-        // задержку потока устройства вывода. Её добавляем к меткам (синхронизация с картинкой, §8.1).
-        // GetStreamLatency для loopback возвращает 0: задержку вывода узнаём у временного
-        // render-клиента того же устройства (на неё же ориентируются плееры при синхронизации).
-        let output_latency = if direction == Direction::Render { render_latency(&dev) } else { 0 };
-        tracing::info!("аудио {direction:?}: задержка потока {:.1} мс", output_latency as f64 / 10_000.0);
+        // Метки loopback уже идут по часам позиции устройства вывода (момент воспроизведения
+        // по данным WASAPI), поэтому поправка на задержку вывода не нужна — проверено syncgen.
         client.Start()?;
         let stream = Stream {
             capture,
             format,
             channels: usize::from(fmt.nChannels.max(1)),
             resampler: Resampler::new(fmt.nSamplesPerSec, crate::mixer::SAMPLE_RATE),
-            rate: fmt.nSamplesPerSec.max(1),
-            output_latency,
             device_id: device_id(&dev),
             _client: client,
         };
@@ -194,11 +167,10 @@ fn open(direction: Direction, device: Option<&str>) -> windows::core::Result<(St
 }
 
 impl Stream {
-    /// Забирает все доступные пакеты в очередь (стерео 48 кГц).
-    /// Возвращает время захвата (QPC, 100 нс) кадра, следующего за последним прочитанным.
-    fn read(&mut self, out: &mut VecDeque<f32>) -> windows::core::Result<Option<u64>> {
-        let mut end_time = None;
+    /// Забирает все доступные пакеты в очередь (стерео 48 кГц) с отметками времени захвата.
+    fn read(&mut self, out: &mut AudioQueue) -> windows::core::Result<()> {
         let mut stereo = Vec::new();
+        let mut resampled = Vec::new();
         // SAFETY: буфер пакета валиден между GetBuffer и ReleaseBuffer; размер — frames * channels * bytes.
         unsafe {
             loop {
@@ -211,10 +183,9 @@ impl Stream {
                 let mut flags = 0u32;
                 let mut qpc = 0u64;
                 self.capture.GetBuffer(&mut data, &mut frames, &mut flags, None, Some(&mut qpc))?;
-                // Позиция QPC первого кадра пакета в единицах 100 нс (§5.2 п.4: время захвата).
-                if qpc != 0 {
-                    end_time = Some(qpc + u64::from(frames) * 10_000_000 / u64::from(self.rate) + self.output_latency);
-                }
+                // Позиция QPC первого кадра пакета в единицах 100 нс (§5.2 п.4: время захвата);
+                // при ошибке метки драйвера время пакета неизвестно.
+                let stamp = (qpc != 0 && flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0).then_some(qpc);
                 let frames_us = frames as usize;
                 stereo.clear();
                 stereo.reserve(frames_us * 2);
@@ -239,18 +210,20 @@ impl Stream {
                     stereo.push(r);
                 }
                 self.capture.ReleaseBuffer(frames)?;
-                self.resampler.process(&stereo, out);
+                resampled.clear();
+                self.resampler.process(&stereo, &mut resampled);
+                out.push(&resampled, stamp);
             }
         }
-        Ok(end_time)
+        Ok(())
     }
 }
 
 /// Общее состояние источника захвата (для UI и микшера).
 #[derive(Default)]
 pub struct SourceShared {
-    /// Очередь сэмплов (interleaved стерео 48 кГц).
-    pub queue: Mutex<VecDeque<f32>>,
+    /// Очередь сэмплов (interleaved стерео 48 кГц) с отметками времени захвата.
+    pub queue: Mutex<AudioQueue>,
     /// Имя текущего устройства (`None` — нет устройства).
     pub device_name: Mutex<Option<String>>,
     /// Время захвата (QPC, 100 нс) сэмпла сразу после последнего в очереди; 0 — неизвестно.
@@ -258,7 +231,8 @@ pub struct SourceShared {
     pub stop: AtomicBool,
 }
 
-const MAX_QUEUE: usize = crate::mixer::SAMPLE_RATE as usize; // 0.5 с стерео
+/// Предел очереди источника: 3 с (смещение синхронизации канала — до +2 с, §8.2).
+const MAX_QUEUE: usize = crate::mixer::SAMPLE_RATE as usize * 6; // 3 с стерео
 
 /// Поток захвата одного источника.
 pub fn spawn(
@@ -301,18 +275,15 @@ pub fn spawn(
             if let Some(s) = stream.as_mut() {
                 let mut q = shared.queue.lock();
                 let read = s.read(&mut q);
-                if let Ok(Some(t)) = read {
-                    shared.queue_end_qpc.store(t, Ordering::Release);
-                }
                 if let Err(e) = read {
                     tracing::warn!("аудио {direction:?}: {e}; переподключение");
                     stream = None;
                     *shared.device_name.lock() = None;
                     retry_at = Instant::now() + Duration::from_millis(500);
                 }
-                let len = q.len();
-                if len > MAX_QUEUE {
-                    q.drain(..len - MAX_QUEUE);
+                let frames = q.frames();
+                if frames > MAX_QUEUE / 2 {
+                    q.discard_front(frames - MAX_QUEUE / 2);
                 }
             }
             std::thread::sleep(Duration::from_millis(5));

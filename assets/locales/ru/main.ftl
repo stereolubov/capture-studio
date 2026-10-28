@@ -281,3 +281,4 @@ toast-disk-stopped = Запись остановлена: на диске мен
 status-remux = ремукс { $p }%
 record-pause = Пауза записи
 record-resume = Продолжить запись
+mixer-sync-offset = Смещение синхронизации

@@ -202,10 +202,15 @@ impl App {
         for (cfg, ch) in self.profile.audio.channels.iter_mut().zip(audio.iter()) {
             let fader_changed =
                 cfg.fader_db != ch.fader_db && !(cfg.fader_db.is_infinite() && ch.fader_db.is_infinite());
-            if fader_changed || cfg.muted != ch.muted || cfg.tracks != ch.tracks {
+            if fader_changed
+                || cfg.muted != ch.muted
+                || cfg.tracks != ch.tracks
+                || cfg.sync_offset_ms != ch.sync_offset_ms
+            {
                 cfg.fader_db = ch.fader_db;
                 cfg.muted = ch.muted;
                 cfg.tracks = ch.tracks;
+                cfg.sync_offset_ms = ch.sync_offset_ms;
                 changed = true;
             }
         }

@@ -139,6 +139,8 @@ pub struct AudioChannel {
     pub device_missing: bool,
     /// Битовая маска дорожек 1–6.
     pub tracks: u8,
+    /// Смещение синхронизации, мс.
+    pub sync_offset_ms: i32,
 }
 
 /// Метрики для статус-бара и окна статистики (§14.1).
@@ -273,6 +275,11 @@ pub enum Command {
     SetTracks {
         channel: usize,
         tracks: u8,
+    },
+    /// Смещение синхронизации канала, мс (−950…+2000).
+    SetSyncOffset {
+        channel: usize,
+        ms: i32,
     },
     SetPreviewEnabled(bool),
     /// Применить профиль (вывод, кодирование, видео). Движок перезапускает затронутые части.

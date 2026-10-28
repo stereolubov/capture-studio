@@ -14,9 +14,10 @@ fn main() {
     for _ in 0..30 {
         std::thread::sleep(std::time::Duration::from_millis(200));
         let mut q = shared.queue.lock();
-        let n = q.len();
-        let peak = q.iter().fold(0f32, |m, v| m.max(v.abs()));
-        q.clear();
+        let n = q.samples.len();
+        let peak = q.samples.iter().fold(0f32, |m, v| m.max(v.abs()));
+        let frames = q.frames();
+        q.discard_front(frames);
         println!("сэмплов {n:6}  пик {peak:.4}  устройство {:?}", shared.device_name.lock());
     }
     shared.stop.store(true, std::sync::atomic::Ordering::Release);

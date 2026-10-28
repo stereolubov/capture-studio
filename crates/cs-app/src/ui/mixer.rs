@@ -205,7 +205,7 @@ pub fn draw_panel(app: &mut App, ui: &mut Ui, m: &mut MixerUi, rect: Rect) -> bo
         }
         let gresp = w::badge_button(ui, grect, ("gear", i), None, &p);
         w::icon(&painter, grect.center(), Icon::Gear, 9.0, p.mute);
-        gear_menu(app, &gresp, i, ch.monitor, ch.tracks);
+        gear_menu(app, &gresp, i, ch.monitor, ch.tracks, ch.sync_offset_ms);
     }
 
     // Закрыть (✕) в правом верхнем углу — нужно для панели внутри окна.
@@ -215,7 +215,7 @@ pub fn draw_panel(app: &mut App, ui: &mut Ui, m: &mut MixerUi, rect: Rect) -> bo
     !cresp.clicked()
 }
 
-fn gear_menu(app: &mut App, resp: &egui::Response, ch: usize, monitor: MonitorMode, tracks: u8) {
+fn gear_menu(app: &mut App, resp: &egui::Response, ch: usize, monitor: MonitorMode, tracks: u8, offset_ms: i32) {
     let p: Palette = app.palette();
     egui::Popup::menu(resp).show(|ui| {
         ui.set_min_width(200.0);
@@ -233,6 +233,15 @@ fn gear_menu(app: &mut App, resp: &egui::Response, ch: usize, monitor: MonitorMo
             if ui.radio(monitor == mode, app.i18n.t(key)).clicked() {
                 app.send(Command::SetMonitor { channel: ch, mode });
             }
+        }
+        ui.separator();
+        ui.label(
+            egui::RichText::new(app.i18n.t("mixer-sync-offset")).color(p.mute).font(theme::sans(theme::TEXT_CAPTION)),
+        );
+        // Смещение синхронизации (§8.2): «+» — звук канала позже картинки.
+        let mut ms = offset_ms;
+        if ui.add(egui::DragValue::new(&mut ms).range(-950..=2000).speed(1.0).suffix(" ms")).changed() {
+            app.send(Command::SetSyncOffset { channel: ch, ms });
         }
         ui.separator();
         ui.label(egui::RichText::new(app.i18n.t("mixer-tracks")).color(p.mute).font(theme::sans(theme::TEXT_CAPTION)));

@@ -264,7 +264,12 @@ fn start_audio(profile: &Profile) -> Option<AudioEngine> {
                 AudioChannelKind::Desktop => profile.audio.desktop_device.clone(),
                 AudioChannelKind::Mic => profile.audio.mic_device.clone(),
             },
-            control: ChannelControl { fader_db: c.fader_db, muted: c.muted, tracks: c.tracks },
+            control: ChannelControl {
+                fader_db: c.fader_db,
+                muted: c.muted,
+                tracks: c.tracks,
+                sync_offset_ms: c.sync_offset_ms,
+            },
         })
         .collect();
     match AudioEngine::start(channels) {
@@ -291,6 +296,7 @@ fn audio_channels(audio: Option<&AudioEngine>, monitor: &[MonitorMode]) -> Vec<A
                 peak_hold: s.meter.peak_hold,
                 device_missing: s.device.is_none(),
                 tracks: s.control.tracks,
+                sync_offset_ms: s.control.sync_offset_ms,
             })
             .collect()
     })
@@ -330,6 +336,10 @@ impl Worker {
             }
             Command::ToggleMute(channel) => {
                 self.update_control(channel, |c| c.muted = !c.muted);
+                return;
+            }
+            Command::SetSyncOffset { channel, ms } => {
+                self.update_control(channel, |c| c.sync_offset_ms = ms.clamp(-950, 2000));
                 return;
             }
             Command::SetTracks { channel, tracks } => {

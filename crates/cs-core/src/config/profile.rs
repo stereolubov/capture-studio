@@ -222,6 +222,9 @@ pub struct AudioChannelSettings {
     /// Битовая маска дорожек записи 1–6.
     #[serde(default = "default_tracks")]
     pub tracks: u8,
+    /// Смещение синхронизации, мс (−950…+2000).
+    #[serde(default)]
+    pub sync_offset_ms: i32,
 }
 
 fn default_tracks() -> u8 {
@@ -242,6 +245,7 @@ impl Default for AudioSettings {
                     fader_db: 0.0,
                     muted: false,
                     tracks: 0b1,
+                    sync_offset_ms: 0,
                 },
                 AudioChannelSettings {
                     name: "Микрофон".into(),
@@ -249,6 +253,7 @@ impl Default for AudioSettings {
                     fader_db: 0.0,
                     muted: false,
                     tracks: 0b1,
+                    sync_offset_ms: 0,
                 },
             ],
         }
