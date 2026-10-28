@@ -109,6 +109,12 @@ pub fn capsule_meter(
     track: Color32,
     color_at: impl Fn(f32) -> Color32,
 ) {
+    // Прижимаем к физическим пикселям: при дробном масштабе (150%) край без сглаживания
+    // у разных сегментов растеризовался бы по-разному и часть полосы «прыгала» на 1 px.
+    let ppp = painter.pixels_per_point();
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let rect =
+        Rect::from_min_max(pos2(snap(rect.left()), snap(rect.top())), pos2(snap(rect.right()), snap(rect.bottom())));
     let thickness = match orientation {
         Orientation::Horizontal => rect.height(),
         Orientation::Vertical => rect.width(),

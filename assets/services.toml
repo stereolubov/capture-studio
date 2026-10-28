@@ -1,0 +1,62 @@
+# Предустановки сервисов трансляции (§10.2). Файл обновляется без пересборки.
+# Приоритетные сервисы (тесты на реальном сервере): Twitch, YouTube.
+# Параметры остальных сервисов проверить перед публикацией релиза (verified = false).
+
+schema_version = 1
+
+[[service]]
+id = "twitch"
+name = "Twitch"
+verified = true
+servers = [
+    { name = "Авто (ближайший)", url = "rtmp://live.twitch.tv/app" },
+]
+max_video_kbps = 6000
+max_resolution = [1920, 1080]
+max_fps = 60
+keyframe_interval_s = 2
+
+[[service]]
+id = "youtube"
+name = "YouTube"
+verified = true
+servers = [
+    { name = "Основной (RTMPS)", url = "rtmps://a.rtmps.youtube.com:443/live2" },
+    { name = "Основной (RTMP)", url = "rtmp://a.rtmp.youtube.com/live2" },
+    { name = "Резервный (RTMP)", url = "rtmp://b.rtmp.youtube.com/live2?backup=1" },
+]
+max_video_kbps = 12000
+max_resolution = [3840, 2160]
+max_fps = 60
+keyframe_interval_s = 2
+
+# Сервисы, у которых адрес сервера выдаётся в личном кабинете: пользователь вставляет URL и ключ.
+[[service]]
+id = "vk"
+name = "VK Видео Live"
+verified = false
+server_from_dashboard = true
+
+[[service]]
+id = "rutube"
+name = "Rutube"
+verified = false
+server_from_dashboard = true
+
+[[service]]
+id = "kick"
+name = "Kick"
+verified = false
+server_from_dashboard = true
+
+[[service]]
+id = "trovo"
+name = "Trovo"
+verified = false
+server_from_dashboard = true
+
+[[service]]
+id = "custom"
+name = "Пользовательский"
+verified = true
+server_from_dashboard = true
