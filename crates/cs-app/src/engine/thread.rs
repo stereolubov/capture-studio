@@ -238,6 +238,8 @@ struct Worker {
     process: ProcessMonitor,
     audio: Option<AudioEngine>,
     recording: Option<Recording>,
+    recording_starting: Option<crossbeam_channel::Receiver<anyhow::Result<Recording>>>,
+    cancel_start: bool,
     recordings_dir: PathBuf,
     remux_progress: Arc<parking_lot::Mutex<Option<f32>>>,
     disk_checked: Option<Instant>,
@@ -348,6 +350,10 @@ impl Worker {
                 self.start_recording();
                 return;
             }
+            Command::StopRecording if self.recording_starting.is_some() => {
+                self.cancel_start = true;
+                return;
+            }
             Command::StopRecording => {
                 tracing::info!("запись: пропущено рендером {} кадров (за сеанс)", self.stats.dropped_render);
                 if let Some(r) = self.recording.take() {
@@ -391,7 +397,7 @@ impl Worker {
     }
 
     fn start_recording(&mut self) {
-        if self.recording.is_some() {
+        if self.recording.is_some() || self.recording_starting.is_some() {
             return;
         }
         use cs_core::config::profile::{ColorRange, ColorSpace, RateControl as Rc, RecordFormat};
@@ -434,7 +440,31 @@ impl Worker {
             delete_source: p.output.record_format != RecordFormat::MkvRemuxMp4 || p.output.delete_mkv_after_remux,
         };
         let audio = self.audio.as_ref().map(|a| a.subscribe());
-        match Recording::start(&self.gpu, cfg, audio, self.events.clone()) {
+        // Создание аппаратного энкодера занимает ~80 мс: выполняется вне рендер-потока, чтобы
+        // не пропускать кадры сцены (состояние «Запуск…» до готовности).
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (gpu, events) = (self.gpu.clone(), self.events.clone());
+        let spawned = std::thread::Builder::new().name("recording-start".into()).spawn(move || {
+            let _ = tx.send(Recording::start(&gpu, cfg, audio, events));
+        });
+        match spawned {
+            Ok(_) => {
+                self.recording_starting = Some(rx);
+                self.cancel_start = false;
+            }
+            Err(e) => {
+                let _ = self.events.send(Event::Error(format!("запись не начата: {e}")));
+            }
+        }
+    }
+
+    /// Готовность запускаемой записи (опрос каждый тик).
+    fn poll_recording_start(&mut self) {
+        let Some(rx) = &self.recording_starting else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        self.recording_starting = None;
+        match result {
+            Ok(r) if self.cancel_start => r.stop(self.events.clone(), self.remux_progress.clone()),
             Ok(r) => {
                 tracing::info!("запись: {}", r.path.display());
                 self.recording = Some(r);
@@ -557,6 +587,9 @@ impl Worker {
         );
         state.audio = audio_channels(self.audio.as_ref(), &self.monitor);
         state.remux_progress = *self.remux_progress.lock();
+        if self.recording_starting.is_some() {
+            state.record = OutputStatus::Starting;
+        }
         if let Some(r) = &self.recording {
             state.record = OutputStatus::Live;
             state.record_paused = r.pause.paused.load(std::sync::atomic::Ordering::Acquire);
@@ -704,6 +737,8 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         process: ProcessMonitor::new(),
         audio: None,
         recording: None,
+        recording_starting: None,
+        cancel_start: false,
         remux_progress: Arc::new(parking_lot::Mutex::new(None)),
         disk_checked: None,
         disk_warned: false,
@@ -728,16 +763,22 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         w.tick();
     }
     let timer = FrameTimer::new();
+    let loop_start = Instant::now();
     let mut next = Instant::now();
     while !w.shared.shutdown.load(Ordering::Acquire) {
         let interval = Duration::from_secs_f64(1.0 / fps_of(&w.profile));
+        let t0 = Instant::now();
         for cmd in rx.try_iter().take(64) {
             w.handle(cmd);
         }
         w.apply_pending_fit();
+        w.poll_recording_start();
+        let t1 = Instant::now();
         w.tick();
+        let t2 = Instant::now();
         w.update_stats(interval);
         w.publish();
+        let t3 = Instant::now();
         w.check_disk();
         if w.dirty_since.is_some_and(|t| t.elapsed() >= AUTOSAVE_DELAY) {
             w.save_now(true);
@@ -750,6 +791,15 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         if now > next + interval {
             let missed = ((now - next).as_secs_f64() / interval.as_secs_f64()) as u64;
             w.stats.dropped_render += missed;
+            // Диагностика пропусков: где ушло время (команды / компоновка / снимок / ожидание).
+            tracing::info!(
+                "рендер: пропущено {missed} кадр(ов) на {:.2} с; команды {:.1} мс, тик {:.1} мс, снимок {:.1} мс, запись {}",
+                (now - loop_start).as_secs_f64(),
+                (t1 - t0).as_secs_f64() * 1000.0,
+                (t2 - t1).as_secs_f64() * 1000.0,
+                (t3 - t2).as_secs_f64() * 1000.0,
+                if w.recording.is_some() { "идёт" } else { "нет" }
+            );
             w.stats.dropped_frames = w.stats.dropped_render + w.stats.dropped_encoder + w.stats.dropped_network;
             next = now;
         } else if next > now {
