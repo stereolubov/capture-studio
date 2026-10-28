@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 pub const USAGE: &str = "\
 Использование: capture-studio [ПАРАМЕТРЫ]
-  --mock-ui                 UI с мок-данными без захвата
+  --mock-ui                 только UI на демо-данных (без захвата и сети)
   --verbose                 подробный лог (debug)
   --data-dir <папка>        папка данных вместо %APPDATA%\\CaptureStudio
   --screenshot <экран> <файл.png> [--theme dark|light] [--scale 1.0] [--lang ru|en]
