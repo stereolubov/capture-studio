@@ -43,3 +43,7 @@ capture-studio.exe --screenshot 1c settings.png --theme light --scale 1.5 --lang
 
 Документация: [`docs/adr`](docs/adr) — архитектурные решения, [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md),
 [`docs/OPEN_QUESTIONS.md`](docs/OPEN_QUESTIONS.md), [`docs/reports/M0.md`](docs/reports/M0.md).
+
+## Лицензия
+
+MIT — см. [`LICENSE`](LICENSE). Шрифты IBM Plex Sans и JetBrains Mono — SIL OFL 1.1.
