@@ -209,7 +209,7 @@ fn mixer_loop(sources: Vec<Arc<SourceShared>>, shared: Arc<Shared>) {
             let streaming = tail.is_some() && prev_tail[i].is_some_and(|p| tail > Some(p));
             prev_tail[i] = tail;
             if let Some(tail) = tail.filter(|_| streaming) {
-                let need = now - tail as i64 + BLOCK_100NS - i64::from(ch.control.sync_offset_ms.min(0)) * 10_000;
+                let need = now - tail as i64 + BLOCK_100NS - ch.offset_100ns().min(0);
                 if need > delay && need < MAX_DELAY_100NS {
                     delay = (need + DELAY_STEP_100NS - 1) / DELAY_STEP_100NS * DELAY_STEP_100NS;
                     tracing::info!("аудио: задержка шкалы микшера увеличена до {} мс (канал {i})", delay / 10_000);

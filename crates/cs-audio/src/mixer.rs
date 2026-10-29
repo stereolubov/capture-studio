@@ -144,6 +144,15 @@ pub struct ChannelState {
     pub dropped_frames: u64,
 }
 
+impl ChannelState {
+    /// Смещение звука канала на шкале микшера, 100 нс: ручное смещение синхронизации минус
+    /// задержка фильтров (её отрабатываем, беря звук канала раньше).
+    pub fn offset_100ns(&self) -> i64 {
+        let latency = self.filters.latency_frames() as i64 * 10_000_000 / i64::from(SAMPLE_RATE);
+        i64::from(self.control.sync_offset_ms) * 10_000 - latency
+    }
+}
+
 /// Микшер без потоков и устройств (чистая логика — покрыта тестами).
 pub struct Mixer {
     pub channels: Vec<ChannelState>,
@@ -181,7 +190,7 @@ impl Mixer {
             let mut wait = false;
             match (target, q.head_time()) {
                 (Some(t), Some(head)) => {
-                    let desired = t as i64 - i64::from(ch.control.sync_offset_ms) * 10_000;
+                    let desired = t as i64 - ch.offset_100ns();
                     let diff = (head as i64 - desired) * i64::from(SAMPLE_RATE) / 10_000_000;
                     if diff < -ALIGN_TOLERANCE {
                         // Звук канала старше нужного — пропускаем лишнее.

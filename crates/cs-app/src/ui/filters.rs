@@ -82,7 +82,7 @@ pub fn window(app: &mut App, ctx: &Context, st: &mut FiltersUi, screen: Rect) ->
                                 }
                             });
                         });
-                        params(ui, &mut f.kind);
+                        params(app, ui, &mut f.kind);
                     }
                     ui.separator();
                     ui.menu_button(app.i18n.t("filters-add"), |ui| {
@@ -117,12 +117,18 @@ enum Action {
 }
 
 /// Параметры фильтра.
-fn params(ui: &mut egui::Ui, kind: &mut AudioFilterKind) {
+fn params(app: &App, ui: &mut egui::Ui, kind: &mut AudioFilterKind) {
+    let p = app.palette();
     match kind {
         AudioFilterKind::Gain { db } => {
             let (lo, hi) = cs_audio::filters::GAIN_RANGE_DB;
             slider_full_width(ui);
             ui.add(egui::Slider::new(db, lo..=hi).step_by(0.1).suffix(" dB"));
+        }
+        AudioFilterKind::NoiseSuppress => {
+            ui.label(
+                RichText::new(app.i18n.t("filter-noise-hint")).color(p.mute).font(theme::sans(theme::TEXT_CAPTION)),
+            );
         }
     }
 }

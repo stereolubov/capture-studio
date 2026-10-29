@@ -249,16 +249,19 @@ fn default_enabled() -> bool {
 pub enum AudioFilterKind {
     /// Усиление, дБ (−30…+30).
     Gain { db: f32 },
+    /// Шумоподавление RNNoise (без параметров; задержка 10 мс учитывается в синхронизации).
+    NoiseSuppress,
 }
 
 impl AudioFilterKind {
     /// Все типы с параметрами по умолчанию — для меню «Добавить фильтр».
-    pub const ALL: [AudioFilterKind; 1] = [AudioFilterKind::Gain { db: 0.0 }];
+    pub const ALL: [AudioFilterKind; 2] = [AudioFilterKind::Gain { db: 0.0 }, AudioFilterKind::NoiseSuppress];
 
     /// Ключ локализации названия.
     pub fn name_key(&self) -> &'static str {
         match self {
             AudioFilterKind::Gain { .. } => "filter-gain",
+            AudioFilterKind::NoiseSuppress => "filter-noise",
         }
     }
 }
@@ -351,6 +354,7 @@ mod tests {
         p.audio.channels[1].filters = vec![
             AudioFilter { enabled: true, kind: AudioFilterKind::Gain { db: 6.5 } },
             AudioFilter { enabled: false, kind: AudioFilterKind::Gain { db: -3.0 } },
+            AudioFilter { enabled: true, kind: AudioFilterKind::NoiseSuppress },
         ];
         let mut t = toml::Table::try_from(&p).expect("ser");
         t.insert("schema_version".into(), toml::Value::Integer(1));

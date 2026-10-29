@@ -486,7 +486,7 @@ impl App {
                 use cs_core::config::profile::{AudioFilter, AudioFilterKind};
                 let filters = vec![
                     AudioFilter { enabled: true, kind: AudioFilterKind::Gain { db: 6.0 } },
-                    AudioFilter { enabled: false, kind: AudioFilterKind::Gain { db: -3.5 } },
+                    AudioFilter { enabled: true, kind: AudioFilterKind::NoiseSuppress },
                 ];
                 self.send(Command::SetFilters { channel: 1, filters });
                 self.open_filters(1);
