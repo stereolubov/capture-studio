@@ -130,7 +130,44 @@ fn params(app: &App, ui: &mut egui::Ui, kind: &mut AudioFilterKind) {
                 RichText::new(app.i18n.t("filter-noise-hint")).color(p.mute).font(theme::sans(theme::TEXT_CAPTION)),
             );
         }
+        AudioFilterKind::Gate { open_db, close_db, attack_ms, hold_ms, release_ms } => {
+            use cs_audio::filters::{GATE_ATTACK_MS, GATE_HOLD_MS, GATE_RELEASE_MS, GATE_THRESHOLD_DB};
+            fn db(v: &mut f32) -> egui::Slider<'_> {
+                egui::Slider::new(v, GATE_THRESHOLD_DB.0..=GATE_THRESHOLD_DB.1).step_by(0.5).suffix(" dB")
+            }
+            fn ms(v: &mut f32, r: (f32, f32)) -> egui::Slider<'_> {
+                egui::Slider::new(v, r.0..=r.1).logarithmic(true).step_by(1.0).fixed_decimals(0).suffix(" ms")
+            }
+            let (open0, close0) = (*open_db, *close_db);
+            labeled(app, ui, "gate-open", |ui| ui.add(db(open_db)));
+            labeled(app, ui, "gate-close", |ui| ui.add(db(close_db)));
+            labeled(app, ui, "gate-attack", |ui| ui.add(ms(attack_ms, GATE_ATTACK_MS)));
+            labeled(app, ui, "gate-hold", |ui| ui.add(ms(hold_ms, GATE_HOLD_MS)));
+            labeled(app, ui, "gate-release", |ui| ui.add(ms(release_ms, GATE_RELEASE_MS)));
+            // Порог закрытия не выше порога открытия: тянется за тем, который двигали.
+            if *close_db > *open_db {
+                if *open_db != open0 {
+                    *close_db = *open_db;
+                } else if *close_db != close0 {
+                    *open_db = *close_db;
+                }
+            }
+        }
     }
+}
+
+/// Строка параметра: подпись слева, ползунок до поля значения.
+fn labeled(app: &App, ui: &mut egui::Ui, key: &str, add: impl FnOnce(&mut egui::Ui) -> egui::Response) {
+    const LABEL_W: f32 = 84.0;
+    let p = app.palette();
+    ui.horizontal(|ui| {
+        // Колонка подписей фиксированной ширины: ползунки начинаются ровно друг под другом.
+        let (rect, _) = ui.allocate_exact_size(vec2(LABEL_W, ui.spacing().interact_size.y), Sense::hover());
+        let font = theme::sans(theme::TEXT_SMALL);
+        ui.painter().text(rect.left_center(), egui::Align2::LEFT_CENTER, app.i18n.t(key), font, p.mute);
+        slider_full_width(ui);
+        add(ui);
+    });
 }
 
 /// Ползунок на всю ширину окна, поле значения справа.

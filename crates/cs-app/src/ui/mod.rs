@@ -487,6 +487,7 @@ impl App {
                 let filters = vec![
                     AudioFilter { enabled: true, kind: AudioFilterKind::Gain { db: 6.0 } },
                     AudioFilter { enabled: true, kind: AudioFilterKind::NoiseSuppress },
+                    AudioFilter { enabled: true, kind: AudioFilterKind::ALL[2] },
                 ];
                 self.send(Command::SetFilters { channel: 1, filters });
                 self.open_filters(1);

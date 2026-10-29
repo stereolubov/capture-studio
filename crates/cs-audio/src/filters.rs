@@ -10,6 +10,15 @@ use nnnoiseless::DenoiseState;
 
 /// Пределы усиления, дБ (§8.3).
 pub const GAIN_RANGE_DB: (f32, f32) = (-30.0, 30.0);
+/// Пределы порогов гейта, дБ.
+pub const GATE_THRESHOLD_DB: (f32, f32) = (-96.0, 0.0);
+/// Пределы атаки, удержания и спада гейта, мс.
+pub const GATE_ATTACK_MS: (f32, f32) = (1.0, 500.0);
+pub const GATE_HOLD_MS: (f32, f32) = (0.0, 2000.0);
+pub const GATE_RELEASE_MS: (f32, f32) = (1.0, 2000.0);
+
+/// Сэмплов в миллисекунде на частоте микшера.
+const PER_MS: f32 = crate::mixer::SAMPLE_RATE as f32 / 1000.0;
 
 /// Цепочка фильтров одного канала.
 #[derive(Default)]
@@ -25,6 +34,7 @@ struct Stage {
 enum StageKind {
     Gain(Gain),
     Denoise(Box<Denoise>),
+    Gate(Gate),
 }
 
 impl FilterChain {
@@ -37,6 +47,9 @@ impl FilterChain {
                 kind: match f.kind {
                     AudioFilterKind::Gain { db } => StageKind::Gain(Gain::new(db)),
                     AudioFilterKind::NoiseSuppress => StageKind::Denoise(Box::new(Denoise::new())),
+                    AudioFilterKind::Gate { open_db, close_db, attack_ms, hold_ms, release_ms } => {
+                        StageKind::Gate(Gate::new(open_db, close_db, attack_ms, hold_ms, release_ms))
+                    }
                 },
             })
             .collect();
@@ -51,6 +64,7 @@ impl FilterChain {
                 (StageKind::Gain(n), StageKind::Gain(o)) => n.current = o.current,
                 // Сеть RNNoise продолжает со своим состоянием: без повторного «разгона».
                 (StageKind::Denoise(n), StageKind::Denoise(o)) => std::mem::swap(n, o),
+                (StageKind::Gate(n), StageKind::Gate(o)) => n.adopt(o),
                 _ => {}
             }
         }
@@ -63,7 +77,7 @@ impl FilterChain {
             .iter()
             .filter(|s| s.enabled)
             .map(|s| match s.kind {
-                StageKind::Gain(_) => 0,
+                StageKind::Gain(_) | StageKind::Gate(_) => 0,
                 StageKind::Denoise(_) => DenoiseState::FRAME_SIZE,
             })
             .sum()
@@ -75,6 +89,7 @@ impl FilterChain {
             match &mut s.kind {
                 StageKind::Gain(g) => g.process(buf),
                 StageKind::Denoise(d) => d.process(buf),
+                StageKind::Gate(g) => g.process(buf),
             }
         }
     }
@@ -107,6 +122,70 @@ impl Gain {
             frame[1] *= self.current;
         }
         self.current = self.target;
+    }
+}
+
+/// Шумовой гейт. Огибающая — пик по обоим каналам (мгновенный подхват, спад 10 мс), чтобы
+/// гейт не дёргался на переходах через ноль. Выше порога открытия гейт открывается за время
+/// атаки; ниже порога закрытия — после удержания закрывается за время спада. Между порогами
+/// состояние сохраняется (гистерезис): затухающее слово не «дребезжит».
+struct Gate {
+    open: f32,
+    close: f32,
+    attack_step: f32,
+    release_step: f32,
+    hold: u32,
+    decay: f32,
+    env: f32,
+    is_open: bool,
+    held: u32,
+    gain: f32,
+}
+
+impl Gate {
+    fn new(open_db: f32, close_db: f32, attack_ms: f32, hold_ms: f32, release_ms: f32) -> Self {
+        let open_db = open_db.clamp(GATE_THRESHOLD_DB.0, GATE_THRESHOLD_DB.1);
+        let close_db = close_db.clamp(GATE_THRESHOLD_DB.0, open_db);
+        Self {
+            open: db_to_gain(open_db),
+            close: db_to_gain(close_db),
+            attack_step: 1.0 / (attack_ms.clamp(GATE_ATTACK_MS.0, GATE_ATTACK_MS.1) * PER_MS),
+            release_step: 1.0 / (release_ms.clamp(GATE_RELEASE_MS.0, GATE_RELEASE_MS.1) * PER_MS),
+            hold: (hold_ms.clamp(GATE_HOLD_MS.0, GATE_HOLD_MS.1) * PER_MS) as u32,
+            decay: (-1.0 / (10.0 * PER_MS)).exp(),
+            env: 0.0,
+            is_open: false,
+            held: 0,
+            gain: 0.0,
+        }
+    }
+
+    fn adopt(&mut self, old: &Gate) {
+        self.env = old.env;
+        self.is_open = old.is_open;
+        self.held = old.held;
+        self.gain = old.gain;
+    }
+
+    fn process(&mut self, buf: &mut [f32]) {
+        for f in buf.as_chunks_mut::<2>().0 {
+            self.env = f[0].abs().max(f[1].abs()).max(self.env * self.decay);
+            if !self.is_open && self.env > self.open {
+                self.is_open = true;
+            } else if self.is_open && self.env < self.close {
+                self.is_open = false;
+                self.held = 0;
+            }
+            if self.is_open {
+                self.gain = (self.gain + self.attack_step).min(1.0);
+            } else if self.held < self.hold {
+                self.held += 1;
+            } else {
+                self.gain = (self.gain - self.release_step).max(0.0);
+            }
+            f[0] *= self.gain;
+            f[1] *= self.gain;
+        }
     }
 }
 
@@ -240,6 +319,59 @@ mod tests {
         run(&mut FilterChain::new(&filter), &mut voice);
         let after = rms(&voice[480 * 40..]);
         assert!(after > before * 0.5, "голос {before} → {after}");
+    }
+
+    fn gate() -> FilterChain {
+        FilterChain::new(&[AudioFilter { enabled: true, kind: AudioFilterKind::ALL[2] }])
+    }
+
+    /// Синус 1 кГц с пиком `db` dBFS, `ms` миллисекунд.
+    fn tone(db: f32, ms: usize) -> Vec<f32> {
+        let a = db_to_gain(db);
+        (0..ms * 48)
+            .flat_map(|i| {
+                let v = a * (std::f32::consts::TAU * 1000.0 * i as f32 / 48_000.0).sin();
+                [v, v]
+            })
+            .collect()
+    }
+
+    fn peak(s: &[f32]) -> f32 {
+        s.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    }
+
+    /// Пробы по 10 мс: громкий сигнал открывает гейт за атаку (25 мс), тихий закрывает его
+    /// после удержания (200 мс) за спад (150 мс).
+    #[test]
+    fn gate_opens_on_attack_and_closes_after_hold_and_release() {
+        let mut g = gate();
+        let mut loud = tone(-10.0, 100);
+        run(&mut g, &mut loud);
+        let ms = |s: &[f32], from: usize, to: usize| peak(&s[from * 96..to * 96]);
+        assert!(ms(&loud, 0, 5) < 0.6 * db_to_gain(-10.0), "атака ещё идёт");
+        assert!((ms(&loud, 40, 100) - db_to_gain(-10.0)).abs() < 1e-3, "открыт полностью");
+
+        let mut quiet = tone(-50.0, 600);
+        run(&mut g, &mut quiet);
+        let q = db_to_gain(-50.0);
+        assert!(ms(&quiet, 20, 180) > 0.95 * q, "удержание: гейт ещё открыт");
+        assert!(ms(&quiet, 260, 300) < q && ms(&quiet, 260, 300) > 0.0, "спад");
+        assert!(ms(&quiet, 400, 600) == 0.0, "закрыт");
+    }
+
+    /// Уровень между порогами (−29 дБ при −32/−26) не меняет состояние гейта.
+    #[test]
+    fn gate_hysteresis_keeps_state_between_thresholds() {
+        let mut closed = gate();
+        let mut mid = tone(-29.0, 300);
+        run(&mut closed, &mut mid);
+        assert_eq!(peak(&mid), 0.0, "закрытый гейт не открывается");
+
+        let mut open = gate();
+        run(&mut open, &mut tone(-10.0, 100));
+        let mut mid = tone(-29.0, 600);
+        run(&mut open, &mut mid);
+        assert!(peak(&mid[mid.len() - 9600..]) > 0.9 * db_to_gain(-29.0), "открытый гейт не закрывается");
     }
 
     /// Смена параметра переносит состояние: переход идёт плавно от прежнего значения.
