@@ -72,6 +72,8 @@ pub struct Recording {
     grid: FrameGrid,
     last_frame_index: Option<i64>,
     grid_phase: Option<i64>,
+    /// Задержка захвата видео (такты QPC), зафиксированная на первом кадре записи.
+    pub capture_lag: Option<i64>,
 }
 
 /// Сетка кадров по точной частоте `num/den`. Целая длительность кадра (166 666 × 100 нс
@@ -245,6 +247,7 @@ impl Recording {
             grid: FrameGrid::new(vs.fps_num, vs.fps_den),
             last_frame_index: None,
             grid_phase: None,
+            capture_lag: None,
             pause,
             pause_started: None,
             remux: cfg.remux,

@@ -365,11 +365,7 @@ impl Worker {
                 return;
             }
             Command::StopRecording => {
-                tracing::info!(
-                    "запись: пропущено рендером {} кадров (за сеанс); задержка захвата видео {:.1} мс",
-                    self.stats.dropped_render,
-                    self.video_lag * 1000.0 / cs_core::clock::Ticks::frequency() as f64
-                );
+                tracing::info!("запись: пропущено рендером {} кадров (за сеанс)", self.stats.dropped_render);
                 if let Some(r) = self.recording.take() {
                     r.stop(self.events.clone(), self.remux_progress.clone());
                 }
@@ -540,7 +536,9 @@ impl Worker {
         }
     }
 
-    fn tick(&mut self) {
+    /// `scheduled` — плановое время тика по расписанию холста: опоздание пробуждения потока
+    /// и ожидание устройства не меняют номер кадра в записи.
+    fn tick(&mut self, scheduled: cs_core::clock::Ticks) {
         let gpu = self.gpu.clone();
         let _g = gpu.lock();
         for s in self.sources.values_mut() {
@@ -561,14 +559,24 @@ impl Worker {
         if let Err(e) = compositor.compose(&gpu, &current, previous.as_ref().map(|(v, t)| (v.as_slice(), *t))) {
             tracing::error!("компоновка: {e}");
         }
+        let now = cs_core::clock::Ticks::now();
+        if let Some(lag) = frame_capture_lag(&self.sources, &self.editor.collection, now) {
+            // Средняя задержка захвата: меряется и вне записи, чтобы к старту записи она устоялась.
+            self.video_lag = if self.video_lag == 0.0 { lag } else { self.video_lag * 0.95 + lag * 0.05 };
+        }
         if let Some(rec) = self.recording.as_mut() {
             let canvas = compositor.canvas();
-            let now = cs_core::clock::Ticks::now();
-            if let Some(lag) = frame_capture_lag(&self.sources, &self.editor.collection, now) {
-                // Сглаживание: метки остаются монотонными, а смещение — средней задержкой захвата.
-                self.video_lag = if self.video_lag == 0.0 { lag } else { self.video_lag * 0.95 + lag * 0.05 };
-            }
-            let at = cs_core::clock::Ticks(now.0 - self.video_lag as i64);
+            // Задержка захвата фиксируется на старте записи. Живое значение ходит пилой от 0 до
+            // кадра (таймер рендера и развёртка монитора идут с чуть разной частотой) и сталкивало
+            // бы кадры между слотами сетки — одиночные пропуски, пока экран меняется.
+            let lag = *rec.capture_lag.get_or_insert_with(|| {
+                tracing::info!(
+                    "запись: задержка захвата видео {:.1} мс",
+                    self.video_lag * 1000.0 / cs_core::clock::Ticks::frequency() as f64
+                );
+                self.video_lag as i64
+            });
+            let at = cs_core::clock::Ticks(scheduled.0 - lag);
             rec.push_frame(&gpu, &canvas.srv, (canvas.width, canvas.height), at);
         }
         if let Some(ms) = compositor.poll_gpu_time(&gpu) {
@@ -774,7 +782,7 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
     // Прогрев: старт захвата, рендер текста и загрузка изображений до начала отсчёта темпа,
     // чтобы инициализация не считалась пропущенными кадрами.
     for _ in 0..3 {
-        w.tick();
+        w.tick(cs_core::clock::Ticks::now());
     }
     let timer = FrameTimer::new();
     let loop_start = Instant::now();
@@ -788,7 +796,12 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         w.apply_pending_fit();
         w.poll_recording_start();
         let t1 = Instant::now();
-        w.tick();
+        // Плановое время этого тика: сейчас минус опоздание относительно расписания. Иначе
+        // опоздание больше полукадра сдвигает кадр в следующий слот сетки записи, а его слот
+        // пустеет (такие пропуски не видны в счётчике).
+        let late = t1.saturating_duration_since(next).as_secs_f64();
+        let now_ticks = cs_core::clock::Ticks::now();
+        w.tick(cs_core::clock::Ticks(now_ticks.0 - (late * cs_core::clock::Ticks::frequency() as f64) as i64));
         let t2 = Instant::now();
         w.update_stats(interval);
         w.publish();
