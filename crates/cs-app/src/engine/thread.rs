@@ -566,16 +566,27 @@ impl Worker {
         }
         if let Some(rec) = self.recording.as_mut() {
             let canvas = compositor.canvas();
-            // Задержка захвата фиксируется на старте записи. Живое значение ходит пилой от 0 до
-            // кадра (таймер рендера и развёртка монитора идут с чуть разной частотой) и сталкивало
-            // бы кадры между слотами сетки — одиночные пропуски, пока экран меняется.
-            let lag = *rec.capture_lag.get_or_insert_with(|| {
-                tracing::info!(
-                    "запись: задержка захвата видео {:.1} мс",
-                    self.video_lag * 1000.0 / cs_core::clock::Ticks::frequency() as f64
-                );
-                self.video_lag as i64
-            });
+            // Задержка захвата в метке меняется ступенькой, только когда живое значение ушло больше
+            // чем на полкадра. Живое значение медленно ползёт в пределах кадра (таймер рендера и
+            // развёртка монитора идут с чуть разной частотой) и дрожит: прямо в метке оно сталкивало
+            // бы кадры между слотами сетки, а замороженное за час уводит синхронизацию на кадр.
+            let ms = 1000.0 / cs_core::clock::Ticks::frequency() as f64;
+            let half_frame = cs_core::clock::Ticks::frequency() as f64 / fps_of(&self.profile) / 2.0;
+            let lag = match rec.capture_lag {
+                Some(lag) if (self.video_lag - lag as f64).abs() <= half_frame => lag,
+                prev => {
+                    match prev {
+                        None => tracing::info!("запись: задержка захвата видео {:.1} мс", self.video_lag * ms),
+                        Some(old) => tracing::info!(
+                            "запись: задержка захвата видео {:.1} → {:.1} мс",
+                            old as f64 * ms,
+                            self.video_lag * ms
+                        ),
+                    }
+                    rec.capture_lag = Some(self.video_lag as i64);
+                    self.video_lag as i64
+                }
+            };
             let at = cs_core::clock::Ticks(scheduled.0 - lag);
             rec.push_frame(&gpu, &canvas.srv, (canvas.width, canvas.height), at);
         }
@@ -650,10 +661,11 @@ impl Worker {
             self.seconds += 1;
             if self.seconds.is_multiple_of(60) {
                 tracing::info!(
-                    "рендер: {:.1} fps, компоновка {:.2} мс GPU, пропущено {} кадров, CPU {:.1}%, RAM {:.0} МБ",
+                    "рендер: {:.1} fps, компоновка {:.2} мс GPU, пропущено {} кадров, захват {:.1} мс, CPU {:.1}%, RAM {:.0} МБ",
                     self.stats.fps,
                     self.stats.render_ms,
                     self.stats.dropped_render,
+                    self.video_lag * 1000.0 / cs_core::clock::Ticks::frequency() as f64,
                     p.cpu_percent,
                     p.working_set_mb
                 );

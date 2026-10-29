@@ -72,7 +72,7 @@ pub struct Recording {
     grid: FrameGrid,
     last_frame_index: Option<i64>,
     grid_phase: Option<i64>,
-    /// Задержка захвата видео (такты QPC), зафиксированная на первом кадре записи.
+    /// Задержка захвата видео в метках кадров, такты QPC (меняется ступенькой, см. рендер-поток).
     pub capture_lag: Option<i64>,
 }
 
