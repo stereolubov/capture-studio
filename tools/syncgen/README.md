@@ -34,7 +34,8 @@ powershell -File tools\syncgen\scripts\measure.ps1 -Auto -DataDir <папка> -
 Отдельно:
 
 - `syncgen --seconds 30 --x 200 --y 200 --out events.json` — только генератор;
-- `python scripts/analyze.py <запись> events.json` — анализ записи по журналу;
+- `python scripts/analyze.py <запись> events.json [начало длительность]` — анализ записи по
+  журналу; для длинных записей — отрезок в секундах, где работал генератор;
 - `python scripts/analyze_clip.py <запись>` — анализ без журнала (вспышки против щелчков в
   любом ролике, например из плеера).
 
@@ -47,3 +48,5 @@ powershell -File tools\syncgen\scripts\measure.ps1 -Auto -DataDir <папка> -
   сравнивайте внутри одного запуска (так делает `-Auto`).
 - Замер на 2026-10-28 (RTX 5080, Sound BlasterX G6, 60 Гц): средняя ошибка от +1 до +17 мс,
   повторяемость записей ±3 мс.
+- Часовая запись 2026-10-29 (обычная работа за компьютером): начало +16.2 мс, конец +11.9 мс —
+  ухода синхронизации нет.
