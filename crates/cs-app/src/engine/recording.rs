@@ -68,16 +68,37 @@ pub struct Recording {
     pause_started: Option<Ticks>,
     remux: bool,
     delete_source: bool,
-    /// Длительность кадра, 100 нс; метки видео ставятся на эту сетку.
-    frame_duration: i64,
+    /// Сетка кадров: метки видео ставятся на неё.
+    grid: FrameGrid,
     last_frame_index: Option<i64>,
     grid_phase: Option<i64>,
 }
 
-/// Номер кадра на сетке частоты: дрожание времени тика (±пара мс) не попадает в метки,
-/// а настоящие пропуски кадров остаются пропусками.
-fn grid_index(pts: i64, frame_duration: i64) -> i64 {
-    (pts + frame_duration / 2).div_euclid(frame_duration.max(1))
+/// Сетка кадров по точной частоте `num/den`. Целая длительность кадра (166 666 × 100 нс
+/// при 60 fps) за час уходит от настоящих тиков почти на кадр: тики оказываются на границе
+/// слотов, и дрожание даёт пропуски и сдвоенные кадры. Поэтому считаем дробью, без накопления.
+#[derive(Clone, Copy)]
+struct FrameGrid {
+    num: i128,
+    den: i128,
+}
+
+impl FrameGrid {
+    fn new(fps_num: u32, fps_den: u32) -> Self {
+        Self { num: i128::from(fps_num.max(1)), den: i128::from(fps_den.max(1)) }
+    }
+
+    /// Номер ближайшего кадра для времени `t` (100 нс): дрожание тика (±пара мс) не
+    /// попадает в метки, а настоящие пропуски кадров остаются пропусками.
+    fn index(self, t: i64) -> i64 {
+        let unit = self.den * 10_000_000;
+        (i128::from(t) * self.num * 2 + unit).div_euclid(unit * 2) as i64
+    }
+
+    /// Время начала кадра `index`, 100 нс.
+    fn time(self, index: i64) -> i64 {
+        (i128::from(index) * self.den * 10_000_000).div_euclid(self.num) as i64
+    }
 }
 
 fn to_100ns(t: Ticks, start: Ticks) -> i64 {
@@ -221,7 +242,7 @@ impl Recording {
             stop,
             threads,
             stats,
-            frame_duration: vs.frame_duration(),
+            grid: FrameGrid::new(vs.fps_num, vs.fps_den),
             last_frame_index: None,
             grid_phase: None,
             pause,
@@ -245,13 +266,14 @@ impl Recording {
         let elapsed = to_100ns(at, self.start_ticks) - self.pause.total.load(Ordering::Acquire);
         // Фаза сетки — по первому кадру: тики рендера идут с той же фазой, и округление
         // не добавляет постоянной для сеанса ошибки до ±½ кадра.
-        let phase = *self.grid_phase.get_or_insert(elapsed.rem_euclid(self.frame_duration));
-        let index = grid_index(elapsed - phase, self.frame_duration);
+        let grid = self.grid;
+        let phase = *self.grid_phase.get_or_insert_with(|| elapsed - grid.time(grid.index(elapsed)));
+        let index = grid.index(elapsed - phase);
         if self.last_frame_index.is_some_and(|last| index <= last) {
             return; // два тика попали в один слот сетки — второй не нужен
         }
         self.last_frame_index = Some(index);
-        let pts = index * self.frame_duration + phase;
+        let pts = grid.time(index) + phase;
         let tex = self.converter.convert(gpu, canvas, canvas_size);
         if let Some(tx) = &self.video_tx
             && tx.try_send((tex, pts)).is_err()
@@ -428,14 +450,31 @@ pub fn file_name(ext: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::grid_index;
+    use super::FrameGrid;
 
     #[test]
     fn jitter_snaps_to_frame_grid() {
-        let fd = 166_667; // 60 fps
-        assert_eq!(grid_index(0, fd), 0);
-        assert_eq!(grid_index(166_667 + 20_000, fd), 1); // +2 мс дрожания
-        assert_eq!(grid_index(2 * 166_667 - 30_000, fd), 2);
-        assert_eq!(grid_index(5 * 166_667, fd), 5);
+        let g = FrameGrid::new(60, 1);
+        assert_eq!(g.index(0), 0);
+        assert_eq!(g.index(166_667 + 20_000), 1); // +2 мс дрожания
+        assert_eq!(g.index(2 * 166_667 - 30_000), 2);
+        assert_eq!(g.index(5 * 166_667), 5);
+        assert_eq!(g.time(3), 500_000);
+    }
+
+    /// Три часа записи: тики точно по частоте с дрожанием ±3 мс не теряют ни одного кадра.
+    /// С целой длительностью кадра к середине часа шли пропуски пачками.
+    #[test]
+    fn grid_does_not_drift_over_hours() {
+        for (num, den) in [(60, 1), (30_000, 1_001), (24, 1)] {
+            let g = FrameGrid::new(num, den);
+            let frames = 3 * 3600 * i64::from(num) / i64::from(den);
+            for k in 0..frames {
+                let exact = (i128::from(k) * i128::from(den) * 10_000_000 / i128::from(num)) as i64;
+                let jitter = [-30_000, 0, 30_000, 15_000][(k % 4) as usize];
+                assert_eq!(g.index(exact + jitter), k, "{num}/{den}, кадр {k}");
+                assert!((g.time(k) - exact).abs() <= 1);
+            }
+        }
     }
 }
