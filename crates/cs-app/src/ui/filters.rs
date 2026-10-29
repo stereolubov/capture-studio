@@ -1,0 +1,133 @@
+//! Окно фильтров канала (§8.3): цепочка по порядку применения — добавить, включить/выключить,
+//! переставить, удалить, параметры. Каждое изменение уходит в движок всей цепочкой.
+
+use super::App;
+use super::widgets::{self as w, Icon};
+use crate::i18n::s;
+use crate::theme;
+use cs_core::Command;
+use cs_core::config::profile::{AudioFilter, AudioFilterKind};
+use egui::{Area, Context, Id, Order, Rect, RichText, Sense, pos2, vec2};
+
+const WIDTH: f32 = 340.0;
+const PAD: f32 = 16.0;
+
+pub struct FiltersUi {
+    pub channel: usize,
+    pos: Option<egui::Pos2>,
+}
+
+impl FiltersUi {
+    pub fn new(channel: usize) -> Self {
+        Self { channel, pos: None }
+    }
+}
+
+/// Плавающее окно; `false` — закрыто.
+pub fn window(app: &mut App, ctx: &Context, st: &mut FiltersUi, screen: Rect) -> bool {
+    let Some(ch) = app.engine.state().audio.get(st.channel).cloned() else { return false };
+    let p = app.palette();
+    let default = pos2(screen.center().x - WIDTH / 2.0, screen.top() + 80.0);
+    let mut keep = true;
+    let mut filters = ch.filters.clone();
+    let area = Area::new(Id::unique("filters"))
+        .fade_in(false)
+        .order(Order::Middle)
+        .default_pos(st.pos.unwrap_or(default))
+        .constrain_to(screen)
+        .movable(true)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(p.bg)
+                .stroke(egui::Stroke::new(1.0, p.line))
+                .corner_radius(8.0)
+                .inner_margin(PAD)
+                .show(ui, |ui| {
+                    ui.set_width(WIDTH - 2.0 * PAD);
+                    let title = app.i18n.t_args("filters-title", &[("channel", s(&ch.name))]);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(title).color(p.fg).font(theme::sans_medium(theme::TEXT)));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let (rect, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::click());
+                            let color = if resp.hovered() { p.fg } else { p.line };
+                            w::icon(ui.painter(), rect.center(), Icon::Close, 7.0, color);
+                            if resp.clicked() {
+                                keep = false;
+                            }
+                        });
+                    });
+                    ui.add_space(8.0);
+                    if filters.is_empty() {
+                        ui.label(
+                            RichText::new(app.i18n.t("filters-empty"))
+                                .color(p.mute)
+                                .font(theme::sans(theme::TEXT_SMALL)),
+                        );
+                    }
+                    let n = filters.len();
+                    let mut action = None;
+                    for (i, f) in filters.iter_mut().enumerate() {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut f.enabled, app.i18n.t(f.kind.name_key()));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button("✕").on_hover_text(app.i18n.t("filters-remove")).clicked() {
+                                    action = Some(Action::Remove(i));
+                                }
+                                if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).clicked() {
+                                    action = Some(Action::Swap(i, i + 1));
+                                }
+                                if ui.add_enabled(i > 0, egui::Button::new("▲").small()).clicked() {
+                                    action = Some(Action::Swap(i - 1, i));
+                                }
+                            });
+                        });
+                        params(ui, &mut f.kind);
+                    }
+                    ui.separator();
+                    ui.menu_button(app.i18n.t("filters-add"), |ui| {
+                        for kind in AudioFilterKind::ALL {
+                            if ui.button(app.i18n.t(kind.name_key())).clicked() {
+                                action = Some(Action::Add(kind));
+                                ui.close();
+                            }
+                        }
+                    });
+                    match action {
+                        Some(Action::Remove(i)) => {
+                            filters.remove(i);
+                        }
+                        Some(Action::Swap(a, b)) => filters.swap(a, b),
+                        Some(Action::Add(kind)) => filters.push(AudioFilter { enabled: true, kind }),
+                        None => {}
+                    }
+                });
+        });
+    st.pos = Some(area.response.rect.min);
+    if filters != ch.filters {
+        app.send(Command::SetFilters { channel: st.channel, filters });
+    }
+    keep
+}
+
+enum Action {
+    Remove(usize),
+    Swap(usize, usize),
+    Add(AudioFilterKind),
+}
+
+/// Параметры фильтра.
+fn params(ui: &mut egui::Ui, kind: &mut AudioFilterKind) {
+    match kind {
+        AudioFilterKind::Gain { db } => {
+            let (lo, hi) = cs_audio::filters::GAIN_RANGE_DB;
+            slider_full_width(ui);
+            ui.add(egui::Slider::new(db, lo..=hi).step_by(0.1).suffix(" dB"));
+        }
+    }
+}
+
+/// Ползунок на всю ширину окна, поле значения справа.
+fn slider_full_width(ui: &mut egui::Ui) {
+    ui.spacing_mut().slider_width = ui.available_width() - 80.0;
+}

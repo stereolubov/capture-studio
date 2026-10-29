@@ -189,13 +189,17 @@ hotkey-action-mini = Mini mode
 ## Mixer (1d)
 mixer-title = MIXER
 mixer-mute = M
-mixer-filters = Filters
+mixer-filters = Filters…
+filters-title = Filters: { $channel }
+filters-empty = No filters. The chain runs top to bottom, before the fader.
+filters-add = + Add filter
+filters-remove = Remove
+filter-gain = Gain
 mixer-monitor = Monitoring
 mixer-monitor-off = Off
 mixer-monitor-only = Monitor only
 mixer-monitor-output = Monitor and output
 mixer-tracks = Tracks
-mixer-filters-soon = Filter chain arrives in M2
 
 ## Statistics (1e)
 stats-title = STATISTICS

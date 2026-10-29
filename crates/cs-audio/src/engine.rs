@@ -3,10 +3,12 @@
 //! Метка времени блока = момент старта микшера + `index × 10 мс` (тики QPC, §5.2 п.4).
 //! Подписчики (энкодеры) получают каждый блок; аудио не отбрасывается никогда (§5.2 п.5).
 
+use crate::filters::FilterChain;
 use crate::mixer::{BLOCK_FRAMES, ChannelControl, Meter, MixBlock, Mixer, SAMPLE_RATE};
 use crate::wasapi::{self, Direction, SourceShared};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use cs_core::clock::Ticks;
+use cs_core::config::profile::AudioFilter;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +22,7 @@ pub struct ChannelConfig {
     /// `None` — устройство по умолчанию (со следованием за его сменой).
     pub device: Option<String>,
     pub control: ChannelControl,
+    pub filters: Vec<AudioFilter>,
 }
 
 /// Блок микса с меткой времени мастер-часов.
@@ -34,13 +37,23 @@ pub struct TimedBlock {
 pub struct ChannelStatus {
     pub name: String,
     pub control: ChannelControl,
+    pub filters: Vec<AudioFilter>,
     pub meter: Meter,
     /// Имя устройства; `None` — устройство недоступно.
     pub device: Option<String>,
 }
 
+/// Передача цепочки фильтров в поток микшера и обратно (старая уничтожается вне аудиопотока).
+#[derive(Default)]
+struct ChainSlot {
+    incoming: Option<FilterChain>,
+    outgoing: Option<FilterChain>,
+}
+
 struct Shared {
     controls: Mutex<Vec<ChannelControl>>,
+    filters: Mutex<Vec<Vec<AudioFilter>>>,
+    chains: Mutex<Vec<ChainSlot>>,
     meters: Mutex<Vec<Meter>>,
     subscribers: Mutex<Vec<Sender<Arc<TimedBlock>>>>,
     stop: AtomicBool,
@@ -65,6 +78,13 @@ impl AudioEngine {
         }
         let shared = Arc::new(Shared {
             controls: Mutex::new(channels.iter().map(|c| c.control).collect()),
+            filters: Mutex::new(channels.iter().map(|c| c.filters.clone()).collect()),
+            chains: Mutex::new(
+                channels
+                    .iter()
+                    .map(|c| ChainSlot { incoming: Some(FilterChain::new(&c.filters)), outgoing: None })
+                    .collect(),
+            ),
             meters: Mutex::new(vec![Meter::default(); channels.len()]),
             subscribers: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
@@ -88,8 +108,21 @@ impl AudioEngine {
         }
     }
 
+    /// Новая цепочка фильтров канала: собирается здесь, микшер подменяет её на следующем блоке.
+    pub fn set_filters(&self, channel: usize, filters: Vec<AudioFilter>) {
+        let chain = FilterChain::new(&filters);
+        if let Some(f) = self.shared.filters.lock().get_mut(channel) {
+            *f = filters;
+        }
+        if let Some(slot) = self.shared.chains.lock().get_mut(channel) {
+            slot.outgoing = None;
+            slot.incoming = Some(chain);
+        }
+    }
+
     pub fn status(&self) -> Vec<ChannelStatus> {
         let controls = self.shared.controls.lock().clone();
+        let filters = self.shared.filters.lock().clone();
         let meters = self.shared.meters.lock().clone();
         self.names
             .iter()
@@ -97,6 +130,7 @@ impl AudioEngine {
             .map(|(i, name)| ChannelStatus {
                 name: name.clone(),
                 control: controls.get(i).copied().unwrap_or_default(),
+                filters: filters.get(i).cloned().unwrap_or_default(),
                 meter: meters.get(i).copied().unwrap_or_default(),
                 device: self.sources.get(i).and_then(|s| s.device_name.lock().clone()),
             })
@@ -153,6 +187,15 @@ fn mixer_loop(sources: Vec<Arc<SourceShared>>, shared: Arc<Shared>) {
             let controls = shared.controls.lock();
             for (ch, c) in mixer.channels.iter_mut().zip(controls.iter()) {
                 ch.control = *c;
+            }
+        }
+        // Новые цепочки фильтров: без ожидания, если движок как раз пишет в слоты.
+        if let Some(mut slots) = shared.chains.try_lock() {
+            for (ch, slot) in mixer.channels.iter_mut().zip(slots.iter_mut()) {
+                if let Some(mut chain) = slot.incoming.take() {
+                    chain.adopt(&mut ch.filters);
+                    slot.outgoing = Some(std::mem::replace(&mut ch.filters, chain));
+                }
             }
         }
         let scheduled =

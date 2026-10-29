@@ -4,6 +4,7 @@
 //! Окну (платформенному слою) UI сообщает геометрию собственного заголовка ([`Chrome`])
 //! и команды ([`WindowCommand`]).
 
+mod filters;
 mod format;
 mod main_window;
 mod menus;
@@ -88,6 +89,7 @@ struct Overlays {
     settings: Option<settings::SettingsDialog>,
     mixer: Option<mixer::MixerUi>,
     stats: Option<stats::StatsUi>,
+    filters: Option<filters::FiltersUi>,
     source: Option<source_dialog::SourceDialog>,
 }
 
@@ -188,6 +190,11 @@ impl App {
         self.overlays.settings.is_some() || self.overlays.source.is_some()
     }
 
+    /// Окно фильтров канала (§8.3).
+    pub fn open_filters(&mut self, channel: usize) {
+        self.overlays.filters = Some(filters::FiltersUi::new(channel));
+    }
+
     pub fn open_stats(&mut self) {
         self.overlays.stats = Some(stats::StatsUi::default());
     }
@@ -206,11 +213,13 @@ impl App {
                 || cfg.muted != ch.muted
                 || cfg.tracks != ch.tracks
                 || cfg.sync_offset_ms != ch.sync_offset_ms
+                || cfg.filters != ch.filters
             {
                 cfg.fader_db = ch.fader_db;
                 cfg.muted = ch.muted;
                 cfg.tracks = ch.tracks;
                 cfg.sync_offset_ms = ch.sync_offset_ms;
+                cfg.filters = ch.filters.clone();
                 changed = true;
             }
         }
@@ -333,6 +342,12 @@ impl App {
                 self.overlays.stats = Some(s);
             }
         }
+        if let Some(mut f) = self.overlays.filters.take() {
+            let keep = filters::window(self, ctx, &mut f, screen);
+            if keep && self.overlays.filters.is_none() {
+                self.overlays.filters = Some(f);
+            }
+        }
         if let Some(mut d) = self.overlays.source.take() {
             let keep = source_dialog::modal(self, ctx, &mut d, screen);
             if keep && self.overlays.source.is_none() {
@@ -379,6 +394,8 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             if self.menu.is_open() {
                 self.menu.close();
+            } else if self.overlays.filters.is_some() {
+                self.overlays.filters = None;
             } else if self.overlays.stats.is_some() {
                 self.overlays.stats = None;
             } else {
@@ -407,6 +424,8 @@ pub enum Screen {
     Mini,
     /// Главное окно с открытым окном свойств текстового источника.
     Source,
+    /// Главное окно с открытым окном фильтров микрофона.
+    Filters,
 }
 
 impl Screen {
@@ -418,6 +437,7 @@ impl Screen {
             "1e" | "stats" => Self::Stats,
             "1f" | "mini" => Self::Mini,
             "source" => Self::Source,
+            "filters" => Self::Filters,
             _ => return None,
         })
     }
@@ -433,7 +453,7 @@ impl App {
             Screen::Mixer => mixer::panel_size(self, ctx),
             Screen::Stats => stats::panel_size(self, ctx),
             Screen::Mini => mini::SIZE,
-            Screen::Source => Vec2::new(1282.0, 762.0),
+            Screen::Source | Screen::Filters => Vec2::new(1282.0, 762.0),
         }
     }
 
@@ -459,8 +479,23 @@ impl App {
                 self.mode = Mode::Mini;
                 mini::draw(self, ui, rect);
             }
-            Screen::Source => main_window::draw(self, ui, rect),
+            Screen::Source | Screen::Filters => main_window::draw(self, ui, rect),
         });
+        if screen == Screen::Filters {
+            if self.overlays.filters.is_none() {
+                use cs_core::config::profile::{AudioFilter, AudioFilterKind};
+                let filters = vec![
+                    AudioFilter { enabled: true, kind: AudioFilterKind::Gain { db: 6.0 } },
+                    AudioFilter { enabled: false, kind: AudioFilterKind::Gain { db: -3.5 } },
+                ];
+                self.send(Command::SetFilters { channel: 1, filters });
+                self.open_filters(1);
+            }
+            if let Some(mut f) = self.overlays.filters.take() {
+                filters::window(self, ctx, &mut f, rect);
+                self.overlays.filters = Some(f);
+            }
+        }
         if screen == Screen::Source {
             if self.overlays.source.is_none() {
                 self.open_new_source(source_dialog::NewKind::Text);

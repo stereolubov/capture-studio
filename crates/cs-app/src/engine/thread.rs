@@ -270,6 +270,7 @@ fn start_audio(profile: &Profile) -> Option<AudioEngine> {
                 tracks: c.tracks,
                 sync_offset_ms: c.sync_offset_ms,
             },
+            filters: c.filters.clone(),
         })
         .collect();
     match AudioEngine::start(channels) {
@@ -297,6 +298,7 @@ fn audio_channels(audio: Option<&AudioEngine>, monitor: &[MonitorMode]) -> Vec<A
                 device_missing: s.device.is_none(),
                 tracks: s.control.tracks,
                 sync_offset_ms: s.control.sync_offset_ms,
+                filters: s.filters,
             })
             .collect()
     })
@@ -336,6 +338,12 @@ impl Worker {
             }
             Command::ToggleMute(channel) => {
                 self.update_control(channel, |c| c.muted = !c.muted);
+                return;
+            }
+            Command::SetFilters { channel, filters } => {
+                if let Some(a) = &self.audio {
+                    a.set_filters(channel, filters);
+                }
                 return;
             }
             Command::SetSyncOffset { channel, ms } => {

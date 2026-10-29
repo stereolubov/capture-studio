@@ -219,10 +219,10 @@ fn gear_menu(app: &mut App, resp: &egui::Response, ch: usize, monitor: MonitorMo
     let p: Palette = app.palette();
     egui::Popup::menu(resp).show(|ui| {
         ui.set_min_width(200.0);
-        ui.label(egui::RichText::new(app.i18n.t("mixer-filters")).color(p.fg));
-        ui.label(
-            egui::RichText::new(app.i18n.t("mixer-filters-soon")).color(p.mute).font(theme::sans(theme::TEXT_CAPTION)),
-        );
+        if ui.button(app.i18n.t("mixer-filters")).clicked() {
+            app.open_filters(ch);
+            ui.close();
+        }
         ui.separator();
         ui.label(egui::RichText::new(app.i18n.t("mixer-monitor")).color(p.mute).font(theme::sans(theme::TEXT_CAPTION)));
         for (mode, key) in [

@@ -189,13 +189,17 @@ hotkey-action-mini = Мини-режим
 ## Микшер (1d)
 mixer-title = МИКШЕР
 mixer-mute = M
-mixer-filters = Фильтры
+mixer-filters = Фильтры…
+filters-title = Фильтры: { $channel }
+filters-empty = Фильтров нет. Цепочка применяется сверху вниз, до фейдера.
+filters-add = + Добавить фильтр
+filters-remove = Удалить
+filter-gain = Усиление
 mixer-monitor = Мониторинг
 mixer-monitor-off = Выкл.
 mixer-monitor-only = Только мониторинг
 mixer-monitor-output = Мониторинг и вывод
 mixer-tracks = Дорожки
-mixer-filters-soon = Цепочка фильтров появится в M2
 
 ## Статистика (1e)
 stats-title = СТАТИСТИКА

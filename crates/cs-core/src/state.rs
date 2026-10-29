@@ -141,6 +141,8 @@ pub struct AudioChannel {
     pub tracks: u8,
     /// Смещение синхронизации, мс.
     pub sync_offset_ms: i32,
+    /// Цепочка фильтров (§8.3).
+    pub filters: Vec<crate::config::profile::AudioFilter>,
 }
 
 /// Метрики для статус-бара и окна статистики (§14.1).
@@ -280,6 +282,11 @@ pub enum Command {
     SetSyncOffset {
         channel: usize,
         ms: i32,
+    },
+    /// Цепочка фильтров канала целиком (добавление, удаление, порядок, параметры).
+    SetFilters {
+        channel: usize,
+        filters: Vec<crate::config::profile::AudioFilter>,
     },
     SetPreviewEnabled(bool),
     /// Применить профиль (вывод, кодирование, видео). Движок перезапускает затронутые части.

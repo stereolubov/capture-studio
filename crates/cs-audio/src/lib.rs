@@ -3,6 +3,7 @@
 #[cfg(windows)]
 pub mod engine;
 pub mod fader;
+pub mod filters;
 pub mod mixer;
 pub mod resample;
 #[cfg(windows)]

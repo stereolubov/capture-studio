@@ -225,6 +225,42 @@ pub struct AudioChannelSettings {
     /// Смещение синхронизации, мс (−950…+2000).
     #[serde(default)]
     pub sync_offset_ms: i32,
+    /// Цепочка фильтров (§8.3), по порядку применения.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<AudioFilter>,
+}
+
+/// Фильтр канала (§8.3). Цепочка применяется по порядку, до фейдера.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AudioFilter {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub kind: AudioFilterKind,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+/// Тип фильтра с параметрами.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AudioFilterKind {
+    /// Усиление, дБ (−30…+30).
+    Gain { db: f32 },
+}
+
+impl AudioFilterKind {
+    /// Все типы с параметрами по умолчанию — для меню «Добавить фильтр».
+    pub const ALL: [AudioFilterKind; 1] = [AudioFilterKind::Gain { db: 0.0 }];
+
+    /// Ключ локализации названия.
+    pub fn name_key(&self) -> &'static str {
+        match self {
+            AudioFilterKind::Gain { .. } => "filter-gain",
+        }
+    }
 }
 
 fn default_tracks() -> u8 {
@@ -246,6 +282,7 @@ impl Default for AudioSettings {
                     muted: false,
                     tracks: 0b1,
                     sync_offset_ms: 0,
+                    filters: Vec::new(),
                 },
                 AudioChannelSettings {
                     name: "Микрофон".into(),
@@ -254,6 +291,7 @@ impl Default for AudioSettings {
                     muted: false,
                     tracks: 0b1,
                     sync_offset_ms: 0,
+                    filters: Vec::new(),
                 },
             ],
         }
@@ -303,6 +341,21 @@ mod tests {
         let mut t = toml::Table::try_from(&p).expect("ser");
         t.insert("schema_version".into(), toml::Value::Integer(1));
         let text = toml::to_string(&t).expect("text");
+        let back: Profile = from_toml_str(&text).expect("de");
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn filters_roundtrip() {
+        let mut p = Profile::default();
+        p.audio.channels[1].filters = vec![
+            AudioFilter { enabled: true, kind: AudioFilterKind::Gain { db: 6.5 } },
+            AudioFilter { enabled: false, kind: AudioFilterKind::Gain { db: -3.0 } },
+        ];
+        let mut t = toml::Table::try_from(&p).expect("ser");
+        t.insert("schema_version".into(), toml::Value::Integer(1));
+        let text = toml::to_string(&t).expect("text");
+        assert!(text.contains("type = \"gain\""), "{text}");
         let back: Profile = from_toml_str(&text).expect("de");
         assert_eq!(back, p);
     }

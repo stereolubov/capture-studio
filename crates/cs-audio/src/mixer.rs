@@ -3,7 +3,7 @@
 //! Каждый канал читает свою очередь сэмплов от источника. Недостача добивается тишиной
 //! (loopback молчит, когда ничего не играет), избыток сверх 100 мс отбрасывается до 20 мс —
 //! простая компенсация дрейфа часов устройства относительно мастер-часов (ADR-0010).
-//! После фейдера считаются индикаторы (пик с удержанием 1.5 с, RMS) и сумма по дорожкам 1–6.
+//! Фильтры канала (§8.3) — до фейдера. После фейдера считаются индикаторы (пик с удержанием 1.5 с, RMS) и сумма по дорожкам 1–6.
 
 use std::collections::VecDeque;
 
@@ -137,6 +137,7 @@ fn to_db(v: f32) -> f32 {
 #[derive(Default)]
 pub struct ChannelState {
     pub control: ChannelControl,
+    pub filters: crate::filters::FilterChain,
     pub meter: Meter,
     hold_age: [u32; 2],
     pub underruns: u64,
@@ -215,9 +216,14 @@ impl Mixer {
             let s = &mut self.scratch;
             s.fill(0.0);
             for (dst, src) in s.iter_mut().zip(q.samples.iter().take(have * 2)) {
-                *dst = src * gain;
+                *dst = *src;
             }
             q.discard_front(have);
+            // Фильтры работают и на тишине: огибающие гейта/компрессора не обрываются.
+            ch.filters.process(s);
+            for v in s.iter_mut() {
+                *v *= gain;
+            }
             // Индикаторы после фейдера.
             for c in 0..2 {
                 let mut peak = 0.0f32;
@@ -285,6 +291,19 @@ mod tests {
         let b = m.mix(&mut [&mut a]);
         assert_eq!(m.channels[0].meter.peak[0], SILENCE_DB);
         assert!(b.tracks[0].iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn filters_run_before_fader() {
+        use cs_core::config::profile::{AudioFilter, AudioFilterKind};
+        let mut m = Mixer::new(1);
+        m.channels[0].filters =
+            crate::filters::FilterChain::new(&[AudioFilter { enabled: true, kind: AudioFilterKind::Gain { db: 6.0 } }]);
+        m.channels[0].control.fader_db = -6.0;
+        let mut a = sine(1000.0, 0.5, BLOCK_FRAMES);
+        m.mix(&mut [&mut a]);
+        // +6 дБ фильтра и −6 дБ фейдера: пик синуса 0.5 остаётся −6.02 dBFS.
+        assert!((m.channels[0].meter.peak[0] + 6.02).abs() < 0.1);
     }
 
     #[test]
