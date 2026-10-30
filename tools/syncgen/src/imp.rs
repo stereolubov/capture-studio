@@ -17,6 +17,10 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Interface, w};
 
 const CLICK_SECS: f64 = 0.05;
+/// Пауза цикла отрисовки, о которой стоит сообщить.
+const LOOP_STALL_SECS: f64 = 0.05;
+/// Пауза запросов звукового устройства, о которой стоит сообщить.
+const AUDIO_STALL_SECS: f64 = 0.1;
 
 /// Событие генератора (секунды от старта).
 #[derive(Default, Clone, Copy)]
@@ -68,8 +72,20 @@ fn audio_thread(shared: Arc<Shared>) -> windows::core::Result<()> {
         client.Start()?;
         let freq = Ticks::frequency();
         let mut written: u64 = 0;
+        let start = Ticks::now().0;
+        let mut last_fill = start;
         while !shared.stop.load(Ordering::Acquire) {
             WaitForSingleObject(event, 200);
+            // Диагностика: устройство долго не просило данных — щелчки в это время не звучат.
+            let now = Ticks::now().0;
+            if secs(now, last_fill) > AUDIO_STALL_SECS {
+                eprintln!(
+                    "syncgen: звук — запросов устройства не было {:.0} мс (на {:.1} с)",
+                    secs(now, last_fill) * 1000.0,
+                    secs(now, start)
+                );
+            }
+            last_fill = now;
             let padding = client.GetCurrentPadding()?;
             let n = buffer - padding;
             if n == 0 {
@@ -163,7 +179,19 @@ pub fn run() -> anyhow_lite::Result<()> {
     let mut lead: i64 = 1;
     let mut flash_until: Option<i64> = None;
     let mut msg = MSG::default();
+    let mut last_iter = start;
+    let mut missed = 0usize;
     while secs(Ticks::now().0, start) < seconds {
+        // Диагностика: цикл стоял дольше кадров — вспышка в выбранную развёртку могла не успеть.
+        let iter = Ticks::now().0;
+        if secs(iter, last_iter) > LOOP_STALL_SECS {
+            eprintln!(
+                "syncgen: цикл отрисовки стоял {:.0} мс (на {:.1} с)",
+                secs(iter, last_iter) * 1000.0,
+                secs(iter, start)
+            );
+        }
+        last_iter = iter;
         // SAFETY: обработка сообщений окна, запросы таймингов DWM и статистики swapchain.
         unsafe {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
@@ -189,6 +217,19 @@ pub fn run() -> anyhow_lite::Result<()> {
             // Кадр, поданный сейчас, показывается через `lead` развёрток (окно, flip model);
             // `lead` подстраивается по фактическому времени показа из статистики.
             let display = vblank + period * lead;
+            // Выбранная развёртка уже прошла (цикл не успел к ней): событие пропускается, иначе
+            // генератор ждал бы её вечно — без вспышек и щелчков до конца.
+            if let Some((v, ev)) = scheduled
+                && display > v + period / 2
+            {
+                eprintln!(
+                    "syncgen: событие {ev} пропущено — кадр опоздал на {:.1} мс (на {:.1} с)",
+                    (display - v) as f64 * 1000.0 / freq as f64,
+                    secs(now, start)
+                );
+                scheduled = None;
+                missed += 1;
+            }
             // Первый белый кадр — ровно в выбранную развёртку; дальше вспышка держится 50 мс,
             // чтобы её гарантированно поймала запись на любой частоте кадров.
             let onset = scheduled.is_some_and(|(v, _)| (display - v).abs() < period / 2);
@@ -247,7 +288,7 @@ pub fn run() -> anyhow_lite::Result<()> {
     json.push(']');
     std::fs::write(&out, json)?;
     let measured: Vec<f64> = events.iter().filter_map(|e| e.video_actual.map(|v| (e.audio - v) * 1000.0)).collect();
-    println!("событий: {}, со статистикой показа: {}", events.len(), measured.len());
+    println!("событий: {}, со статистикой показа: {}, пропущено: {missed}", events.len(), measured.len());
     if !measured.is_empty() {
         let mean = measured.iter().sum::<f64>() / measured.len() as f64;
         println!("эталонный сдвиг звук−показ: среднее {mean:+.2} мс");

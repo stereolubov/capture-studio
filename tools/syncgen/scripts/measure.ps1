@@ -35,6 +35,14 @@ $Root = Resolve-Path "$PSScriptRoot\..\..\.."
 $Syncgen = "$Root\target\release\syncgen.exe"
 $App = "$Root\target\release\capture-studio.exe"
 $Events = Join-Path ([System.IO.Path]::GetTempPath()) "syncgen-events.json"
+# Вывод генератора: итог и предупреждения (пропущенные события, паузы цикла и звука).
+$GenOut = Join-Path ([System.IO.Path]::GetTempPath()) "syncgen-out.txt"
+$GenErr = Join-Path ([System.IO.Path]::GetTempPath()) "syncgen-err.txt"
+
+function GenReport {
+    if (Test-Path $GenOut) { Get-Content $GenOut | ForEach-Object { "генератор: $_" } }
+    if ((Test-Path $GenErr) -and (Get-Item $GenErr).Length -gt 0) { Get-Content $GenErr | ForEach-Object { "генератор: $_" } }
+}
 $env:PYTHONIOENCODING = "utf-8"
 
 function Analyze($file) {
@@ -77,7 +85,8 @@ function Click {
 }
 # Один запуск генератора на все записи: у каждого запуска генератора своя погрешность в
 # несколько миллисекунд, так записи сравниваются между собой честно.
-$g = Start-Process -FilePath $Syncgen -ArgumentList "--seconds", ($Runs * 22 + 6), "--x", $GenX, "--y", $GenY, "--out", $Events -PassThru
+$g = Start-Process -FilePath $Syncgen -ArgumentList "--seconds", ($Runs * 22 + 6), "--x", $GenX, "--y", $GenY, "--out", $Events -PassThru `
+    -RedirectStandardOutput $GenOut -RedirectStandardError $GenErr
 Start-Sleep -Seconds 3
 foreach ($r in 1..$Runs) {
     Click; Start-Sleep -Seconds 17
@@ -85,6 +94,7 @@ foreach ($r in 1..$Runs) {
 }
 $g.WaitForExit(30000) | Out-Null
 $p.CloseMainWindow() | Out-Null; $p.WaitForExit(6000) | Out-Null
+GenReport
 # Из пары MKV + MP4 (ремукс) анализируется MP4.
 Get-ChildItem "$RecDir\*.mp4", "$RecDir\*.mkv" | Where-Object { $_.LastWriteTime -gt $start } |
     Group-Object BaseName | Sort-Object Name | ForEach-Object {
