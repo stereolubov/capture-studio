@@ -75,26 +75,34 @@ pub fn window(app: &mut App, ctx: &Context, st: &mut FiltersUi, screen: Rect) ->
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                         .show(ui, |ui| {
                             for (i, f) in filters.iter_mut().enumerate() {
-                                ui.separator();
-                                ui.horizontal(|ui| {
-                                    ui.checkbox(&mut f.enabled, app.i18n.t(f.kind.name_key()));
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.small_button("✕").on_hover_text(app.i18n.t("filters-remove")).clicked()
-                                        {
-                                            action = Some(Action::Remove(i));
-                                        }
-                                        if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).clicked() {
-                                            action = Some(Action::Swap(i, i + 1));
-                                        }
-                                        if ui.add_enabled(i > 0, egui::Button::new("▲").small()).clicked() {
-                                            action = Some(Action::Swap(i - 1, i));
-                                        }
+                                if i > 0 {
+                                    ui.add_space(6.0);
+                                }
+                                // Каждый фильтр — карточка с тонкой рамкой цвета линий дизайна.
+                                card(app, ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.checkbox(&mut f.enabled, app.i18n.t(f.kind.name_key()));
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui
+                                                .small_button("✕")
+                                                .on_hover_text(app.i18n.t("filters-remove"))
+                                                .clicked()
+                                            {
+                                                action = Some(Action::Remove(i));
+                                            }
+                                            if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).clicked() {
+                                                action = Some(Action::Swap(i, i + 1));
+                                            }
+                                            if ui.add_enabled(i > 0, egui::Button::new("▲").small()).clicked() {
+                                                action = Some(Action::Swap(i - 1, i));
+                                            }
+                                        });
                                     });
+                                    params(app, ui, &mut f.kind);
                                 });
-                                params(app, ui, &mut f.kind);
                             }
                         });
-                    ui.separator();
+                    ui.add_space(8.0);
                     ui.menu_button(app.i18n.t("filters-add"), |ui| {
                         for kind in AudioFilterKind::ALL {
                             if ui.button(app.i18n.t(kind.name_key())).clicked() {
@@ -197,6 +205,20 @@ fn params(app: &App, ui: &mut egui::Ui, kind: &mut AudioFilterKind) {
             });
         }
     }
+}
+
+/// Карточка фильтра на всю ширину списка.
+fn card(app: &App, ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    let p = app.palette();
+    egui::Frame::new()
+        .fill(egui::Color32::TRANSPARENT)
+        .stroke(egui::Stroke::new(1.0, p.line))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
 }
 
 /// Строка параметра: подпись слева, ползунок до поля значения.
