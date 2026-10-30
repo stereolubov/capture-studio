@@ -489,6 +489,7 @@ impl App {
                     AudioFilter { enabled: true, kind: AudioFilterKind::NoiseSuppress },
                     AudioFilter { enabled: true, kind: AudioFilterKind::ALL[2] },
                     AudioFilter { enabled: true, kind: AudioFilterKind::ALL[3] },
+                    AudioFilter { enabled: true, kind: AudioFilterKind::ALL[4] },
                 ];
                 self.send(Command::SetFilters { channel: 1, filters });
                 self.open_filters(1);

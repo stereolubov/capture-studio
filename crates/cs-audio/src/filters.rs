@@ -24,6 +24,10 @@ pub const COMP_ATTACK_MS: (f32, f32) = (1.0, 500.0);
 pub const COMP_RELEASE_MS: (f32, f32) = (1.0, 1000.0);
 pub const COMP_MAKEUP_DB: (f32, f32) = (0.0, 30.0);
 
+/// Пределы параметров лимитера.
+pub const LIM_CEILING_DB: (f32, f32) = (-30.0, 0.0);
+pub const LIM_RELEASE_MS: (f32, f32) = (1.0, 1000.0);
+
 /// Сэмплов в миллисекунде на частоте микшера.
 const PER_MS: f32 = crate::mixer::SAMPLE_RATE as f32 / 1000.0;
 
@@ -43,6 +47,7 @@ enum StageKind {
     Denoise(Box<Denoise>),
     Gate(Gate),
     Compressor(Compressor),
+    Limiter(Limiter),
 }
 
 impl FilterChain {
@@ -61,6 +66,9 @@ impl FilterChain {
                     AudioFilterKind::Compressor { threshold_db, ratio, attack_ms, release_ms, makeup_db } => {
                         StageKind::Compressor(Compressor::new(threshold_db, ratio, attack_ms, release_ms, makeup_db))
                     }
+                    AudioFilterKind::Limiter { ceiling_db, release_ms } => {
+                        StageKind::Limiter(Limiter::new(ceiling_db, release_ms))
+                    }
                 },
             })
             .collect();
@@ -77,6 +85,7 @@ impl FilterChain {
                 (StageKind::Denoise(n), StageKind::Denoise(o)) => std::mem::swap(n, o),
                 (StageKind::Gate(n), StageKind::Gate(o)) => n.adopt(o),
                 (StageKind::Compressor(n), StageKind::Compressor(o)) => n.env = o.env,
+                (StageKind::Limiter(n), StageKind::Limiter(o)) => n.env = o.env,
                 _ => {}
             }
         }
@@ -89,7 +98,7 @@ impl FilterChain {
             .iter()
             .filter(|s| s.enabled)
             .map(|s| match s.kind {
-                StageKind::Gain(_) | StageKind::Gate(_) | StageKind::Compressor(_) => 0,
+                StageKind::Gain(_) | StageKind::Gate(_) | StageKind::Compressor(_) | StageKind::Limiter(_) => 0,
                 StageKind::Denoise(_) => DenoiseState::FRAME_SIZE,
             })
             .sum()
@@ -103,6 +112,7 @@ impl FilterChain {
                 StageKind::Denoise(d) => d.process(buf),
                 StageKind::Gate(g) => g.process(buf),
                 StageKind::Compressor(c) => c.process(buf),
+                StageKind::Limiter(l) => l.process(buf),
             }
         }
     }
@@ -236,6 +246,36 @@ impl Compressor {
             let g = db_to_gain(self.makeup_db - reduction);
             f[0] *= g;
             f[1] *= g;
+        }
+    }
+}
+
+/// Лимитер без задержки: огибающая подхватывает пик мгновенно, поэтому выход не выше потолка;
+/// после пика усиление возвращается за время спада.
+struct Limiter {
+    ceiling: f32,
+    release: f32,
+    env: f32,
+}
+
+impl Limiter {
+    fn new(ceiling_db: f32, release_ms: f32) -> Self {
+        Self {
+            ceiling: db_to_gain(ceiling_db.clamp(LIM_CEILING_DB.0, LIM_CEILING_DB.1)),
+            release: (-1.0 / (release_ms.clamp(LIM_RELEASE_MS.0, LIM_RELEASE_MS.1) * PER_MS)).exp(),
+            env: 0.0,
+        }
+    }
+
+    fn process(&mut self, buf: &mut [f32]) {
+        for f in buf.as_chunks_mut::<2>().0 {
+            let level = f[0].abs().max(f[1].abs());
+            self.env = level.max(self.env * self.release);
+            if self.env > self.ceiling {
+                let g = self.ceiling / self.env;
+                f[0] *= g;
+                f[1] *= g;
+            }
         }
     }
 }
@@ -464,6 +504,35 @@ mod tests {
         let later = peak_db(&step[96 * 50..96 * 60]); // 50–60 мс
         assert!(first > -9.0, "в начале сжатие ещё слабое: {first}");
         assert!(later < -13.0, "к 50 мс сжатие почти полное: {later}");
+    }
+
+    fn limiter(ceiling_db: f32) -> FilterChain {
+        let kind = AudioFilterKind::Limiter { ceiling_db, release_ms: 60.0 };
+        FilterChain::new(&[AudioFilter { enabled: true, kind }])
+    }
+
+    /// Выход не превышает потолок ни на громком тоне, ни на одиночных пиках; тихий сигнал —
+    /// без изменений; после пика усиление возвращается.
+    #[test]
+    fn limiter_holds_ceiling_and_recovers() {
+        let ceiling = db_to_gain(-6.0);
+        let mut loud = tone(0.0, 200);
+        for (i, v) in loud.iter_mut().enumerate().step_by(997) {
+            *v = if i % 2 == 0 { 1.5 } else { -1.5 }; // пики выше 0 dBFS
+        }
+        run(&mut limiter(-6.0), &mut loud);
+        assert!(peak(&loud) <= ceiling * 1.000_01, "{}", peak(&loud));
+
+        let mut quiet = tone(-20.0, 100);
+        let orig = quiet.clone();
+        run(&mut limiter(-6.0), &mut quiet);
+        assert_eq!(quiet, orig);
+
+        let mut l = limiter(-6.0);
+        run(&mut l, &mut tone(0.0, 50));
+        let mut after = tone(-20.0, 500);
+        run(&mut l, &mut after);
+        assert!((peak_db(&after[after.len() - 9600..]) + 20.0).abs() < 0.05, "усиление вернулось");
     }
 
     /// Смена параметра переносит состояние: переход идёт плавно от прежнего значения.

@@ -66,24 +66,34 @@ pub fn window(app: &mut App, ctx: &Context, st: &mut FiltersUi, screen: Rect) ->
                     }
                     let n = filters.len();
                     let mut action = None;
-                    for (i, f) in filters.iter_mut().enumerate() {
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.checkbox(&mut f.enabled, app.i18n.t(f.kind.name_key()));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("✕").on_hover_text(app.i18n.t("filters-remove")).clicked() {
-                                    action = Some(Action::Remove(i));
-                                }
-                                if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).clicked() {
-                                    action = Some(Action::Swap(i, i + 1));
-                                }
-                                if ui.add_enabled(i > 0, egui::Button::new("▲").small()).clicked() {
-                                    action = Some(Action::Swap(i - 1, i));
-                                }
-                            });
+                    let list_h = (screen.height() - 220.0).max(160.0);
+                    // Сплошная полоса прокрутки: плавающая в покое прозрачна, и не видно, что ниже есть ещё фильтры.
+                    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                    egui::ScrollArea::vertical()
+                        .max_height(list_h)
+                        .auto_shrink([false, true])
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                        .show(ui, |ui| {
+                            for (i, f) in filters.iter_mut().enumerate() {
+                                ui.separator();
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut f.enabled, app.i18n.t(f.kind.name_key()));
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui.small_button("✕").on_hover_text(app.i18n.t("filters-remove")).clicked()
+                                        {
+                                            action = Some(Action::Remove(i));
+                                        }
+                                        if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).clicked() {
+                                            action = Some(Action::Swap(i, i + 1));
+                                        }
+                                        if ui.add_enabled(i > 0, egui::Button::new("▲").small()).clicked() {
+                                            action = Some(Action::Swap(i - 1, i));
+                                        }
+                                    });
+                                });
+                                params(app, ui, &mut f.kind);
+                            }
                         });
-                        params(app, ui, &mut f.kind);
-                    }
                     ui.separator();
                     ui.menu_button(app.i18n.t("filters-add"), |ui| {
                         for kind in AudioFilterKind::ALL {
@@ -170,6 +180,21 @@ fn params(app: &App, ui: &mut egui::Ui, kind: &mut AudioFilterKind) {
             labeled(app, ui, "comp-attack", |ui| ui.add(ms(attack_ms, COMP_ATTACK_MS)));
             labeled(app, ui, "comp-release", |ui| ui.add(ms(release_ms, COMP_RELEASE_MS)));
             labeled(app, ui, "comp-makeup", |ui| ui.add(db(makeup_db, COMP_MAKEUP_DB)));
+        }
+        AudioFilterKind::Limiter { ceiling_db, release_ms } => {
+            use cs_audio::filters::{LIM_CEILING_DB, LIM_RELEASE_MS};
+            labeled(app, ui, "lim-ceiling", |ui| {
+                ui.add(egui::Slider::new(ceiling_db, LIM_CEILING_DB.0..=LIM_CEILING_DB.1).step_by(0.1).suffix(" dB"))
+            });
+            labeled(app, ui, "lim-release", |ui| {
+                ui.add(
+                    egui::Slider::new(release_ms, LIM_RELEASE_MS.0..=LIM_RELEASE_MS.1)
+                        .logarithmic(true)
+                        .step_by(1.0)
+                        .fixed_decimals(0)
+                        .suffix(" ms"),
+                )
+            });
         }
     }
 }
