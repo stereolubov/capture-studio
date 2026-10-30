@@ -222,6 +222,11 @@ fn mixer_loop(sources: Vec<Arc<SourceShared>>, shared: Arc<Shared>) {
         drop(queues);
         drop(guards);
         *shared.meters.lock() = mixer.channels.iter().map(|c| c.meter).collect();
+        // Раз в минуту — подстройка ресемплеров под часы устройств (ADR-0010), для диагностики.
+        if mixed.index > 0 && mixed.index.is_multiple_of(6000) {
+            let ppm: Vec<String> = mixer.channels.iter().map(|c| format!("{:+.0}", c.drift.ppm())).collect();
+            tracing::info!("аудио: подстройка часов каналов, ppm: {}", ppm.join(" "));
+        }
         // Метка блока — время захвата его звука.
         let pts = Ticks(scheduled.0 - (i128::from(delay) * i128::from(freq) / 10_000_000) as i64);
         let timed = Arc::new(TimedBlock { pts, block: mixed });

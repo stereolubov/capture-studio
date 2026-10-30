@@ -2,12 +2,12 @@
 //! и звук приложения (process loopback с дочерними процессами, Windows 10 2004+).
 //!
 //! Поток захвата на источник: опрос каждые 5 мс (loopback не присылает событий, когда ничего
-//! не играет), преобразование в float32 стерео 48 кГц, запись в очередь канала.
+//! не играет), преобразование в float32 стерео в частоте устройства (в 48 кГц переводит
+//! ресемплер канала в микшере, ADR-0010), запись в очередь канала.
 //! Устройство по умолчанию отслеживается раз в 2 с; потеря устройства — переподключение.
 //! Приложение ищется по имени exe; закрылось — канал ждёт его нового запуска.
 
 use crate::mixer::AudioQueue;
-use crate::resample::Resampler;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -119,7 +119,8 @@ struct Stream {
     capture: IAudioCaptureClient,
     format: SampleFormat,
     channels: usize,
-    resampler: Resampler,
+    /// Частота устройства.
+    rate: u32,
     device_id: String,
 }
 
@@ -166,7 +167,7 @@ fn open(direction: Direction, device: Option<&str>) -> windows::core::Result<(St
             capture,
             format,
             channels: usize::from(fmt.nChannels.max(1)),
-            resampler: Resampler::new(fmt.nSamplesPerSec, crate::mixer::SAMPLE_RATE),
+            rate: fmt.nSamplesPerSec,
             device_id: device_id(&dev),
             _client: client,
         };
@@ -199,7 +200,7 @@ fn open_app(exe: &str) -> windows::core::Result<(Stream, String)> {
             capture,
             format: SampleFormat::F32,
             channels: 2,
-            resampler: Resampler::new(rate, rate),
+            rate,
             device_id: pid.to_string(),
             _client: client,
         };
@@ -419,10 +420,10 @@ pub fn audio_apps() -> Vec<AppInfo> {
 }
 
 impl Stream {
-    /// Забирает все доступные пакеты в очередь (стерео 48 кГц) с отметками времени захвата.
+    /// Забирает все доступные пакеты в очередь (стерео, частота устройства) с отметками времени.
     fn read(&mut self, out: &mut AudioQueue) -> windows::core::Result<()> {
+        out.set_rate(self.rate);
         let mut stereo = Vec::new();
-        let mut resampled = Vec::new();
         // SAFETY: буфер пакета валиден между GetBuffer и ReleaseBuffer; размер — frames * channels * bytes.
         unsafe {
             loop {
@@ -462,9 +463,7 @@ impl Stream {
                     stereo.push(r);
                 }
                 self.capture.ReleaseBuffer(frames)?;
-                resampled.clear();
-                self.resampler.process(&stereo, &mut resampled);
-                out.push(&resampled, stamp);
+                out.push(&stereo, stamp);
             }
         }
         Ok(())

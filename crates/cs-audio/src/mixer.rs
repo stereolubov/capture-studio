@@ -1,8 +1,8 @@
 //! Микшер (§8.2): блоки по 10 мс (480 кадров @ 48 кГц), float32 стерео.
 //!
-//! Каждый канал читает свою очередь сэмплов от источника. Недостача добивается тишиной
-//! (loopback молчит, когда ничего не играет), избыток сверх 100 мс отбрасывается до 20 мс —
-//! простая компенсация дрейфа часов устройства относительно мастер-часов (ADR-0010).
+//! Каждый канал читает свою очередь сэмплов от источника (в частоте устройства) через свой
+//! ресемплер (ADR-0010): перевод в 48 кГц и плавная подстройка под дрейф часов устройства по
+//! меткам захвата. Недостача добивается тишиной (loopback молчит, когда ничего не играет).
 //! Фильтры канала (§8.3) — до фейдера. После фейдера считаются индикаторы (пик с удержанием 1.5 с, RMS) и сумма по дорожкам 1–6.
 
 use std::collections::VecDeque;
@@ -25,19 +25,41 @@ const PEAK_HOLD_BLOCKS: u32 = 150; // 1.5 с
 /// Каждый пакет захвата добавляет отметку «абсолютный номер кадра ↔ время QPC (100 нс)».
 /// Время любого кадра очереди интерполируется от ближайшей отметки, поэтому дыры в данных
 /// и отбрасывание при компенсации дрейфа не смещают метки (§5.2 п.4).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AudioQueue {
-    /// Interleaved стерео 48 кГц.
+    /// Interleaved стерео в частоте устройства.
     pub samples: VecDeque<f32>,
+    /// Частота устройства.
+    rate: u32,
     /// Абсолютный номер первого кадра очереди.
     head: u64,
     /// (абсолютный номер кадра, время захвата в 100 нс).
     marks: VecDeque<(u64, u64)>,
 }
 
+impl Default for AudioQueue {
+    fn default() -> Self {
+        Self { samples: VecDeque::new(), rate: SAMPLE_RATE, head: 0, marks: VecDeque::new() }
+    }
+}
+
 impl AudioQueue {
     pub fn frames(&self) -> usize {
         self.samples.len() / 2
+    }
+
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    /// Новая частота устройства (переподключение): прежние данные в другой частоте сбрасываются.
+    pub fn set_rate(&mut self, rate: u32) {
+        if rate != self.rate && rate > 0 {
+            let n = self.frames();
+            self.discard_front(n);
+            self.marks.clear();
+            self.rate = rate;
+        }
     }
 
     /// Добавляет кадры пакета; `capture_100ns` — время захвата первого кадра.
@@ -65,7 +87,7 @@ impl AudioQueue {
     pub fn tail_time(&self) -> Option<u64> {
         let &(idx, t) = self.marks.back()?;
         let end = self.head + self.frames() as u64;
-        Some(t + end.saturating_sub(idx) * 10_000_000 / u64::from(SAMPLE_RATE))
+        Some(t + end.saturating_sub(idx) * 10_000_000 / u64::from(self.rate))
     }
 
     /// Время захвата первого кадра очереди (100 нс), если известно.
@@ -74,13 +96,13 @@ impl AudioQueue {
         if self.samples.is_empty() {
             return None;
         }
-        Some(t + (self.head - idx) * 10_000_000 / u64::from(SAMPLE_RATE))
+        Some(t + (self.head - idx) * 10_000_000 / u64::from(self.rate))
     }
 }
 
 impl From<VecDeque<f32>> for AudioQueue {
     fn from(samples: VecDeque<f32>) -> Self {
-        Self { samples, head: 0, marks: VecDeque::new() }
+        Self { samples, rate: SAMPLE_RATE, head: 0, marks: VecDeque::new() }
     }
 }
 
@@ -102,8 +124,11 @@ impl Default for ChannelControl {
     }
 }
 
-/// Допуск выравнивания канала по времени, кадров (полблока = 5 мс).
+/// Допуск грубого выравнивания канала при захвате шкалы, кадров (полблока = 5 мс).
 const ALIGN_TOLERANCE: i64 = BLOCK_FRAMES as i64 / 2;
+/// Дальше 20 мс от шкалы — разрыв в данных или рывок: снова грубое выравнивание, ближе —
+/// плавная подстройка скорости ресемплера.
+const RELOCK_FRAMES: i64 = SAMPLE_RATE as i64 / 50;
 /// Жёсткий предел очереди канала (на случай отсутствия меток времени), кадров.
 const HARD_CAP_FRAMES: usize = SAMPLE_RATE as usize * 3;
 
@@ -138,6 +163,10 @@ fn to_db(v: f32) -> f32 {
 pub struct ChannelState {
     pub control: ChannelControl,
     pub filters: crate::filters::FilterChain,
+    /// Ресемплер канала (частота устройства, дрейф часов).
+    pub drift: crate::drift::Drift,
+    /// Канал выровнен по шкале — дальше только плавная подстройка.
+    locked: bool,
     pub meter: Meter,
     hold_age: [u32; 2],
     pub underruns: u64,
@@ -146,9 +175,10 @@ pub struct ChannelState {
 
 impl ChannelState {
     /// Смещение звука канала на шкале микшера, 100 нс: ручное смещение синхронизации минус
-    /// задержка фильтров (её отрабатываем, беря звук канала раньше).
+    /// задержка фильтров и ресемплера (её отрабатываем, беря звук канала раньше).
     pub fn offset_100ns(&self) -> i64 {
-        let latency = self.filters.latency_frames() as i64 * 10_000_000 / i64::from(SAMPLE_RATE);
+        let frames = self.filters.latency_frames() + self.drift.delay_frames();
+        let latency = frames as i64 * 10_000_000 / i64::from(SAMPLE_RATE);
         i64::from(self.control.sync_offset_ms) * 10_000 - latency
     }
 }
@@ -192,42 +222,47 @@ impl Mixer {
                 (Some(t), Some(head)) => {
                     let desired = t as i64 - ch.offset_100ns();
                     let diff = (head as i64 - desired) * i64::from(SAMPLE_RATE) / 10_000_000;
-                    if diff < -ALIGN_TOLERANCE {
+                    let tolerance = if ch.locked { RELOCK_FRAMES } else { ALIGN_TOLERANCE };
+                    if diff < -tolerance {
                         // Звук канала старше нужного — пропускаем лишнее.
-                        let drop = ((-diff) as usize).min(q.frames());
+                        let drop = ch.drift.input_frames_for((-diff) as usize, q.rate()).min(q.frames());
                         q.discard_front(drop);
                         ch.dropped_frames += drop as u64;
-                    } else if diff > ALIGN_TOLERANCE {
+                        ch.drift.reset();
+                        ch.locked = true;
+                    } else if diff > tolerance {
                         // Звук канала ещё «из будущего» — в этот блок канал не попадает.
                         wait = true;
+                        ch.drift.reset();
+                        ch.locked = false;
+                    } else {
+                        ch.locked = true;
+                        ch.drift.steer(diff as f64);
                     }
-                    if q.frames() > HARD_CAP_FRAMES {
-                        let drop = q.frames() - HARD_CAP_FRAMES;
+                    let cap = ch.drift.input_frames_for(HARD_CAP_FRAMES, q.rate());
+                    if q.frames() > cap {
+                        let drop = q.frames() - cap;
                         q.discard_front(drop);
                         ch.dropped_frames += drop as u64;
                     }
                 }
                 _ => {
-                    // Компенсация дрейфа: не даём задержке канала расти.
+                    // Без меток времени: не даём задержке канала расти.
                     let buffered = q.frames();
-                    if buffered > MAX_BUFFERED_FRAMES {
-                        let drop = buffered - TRIM_TO_FRAMES;
+                    if buffered > ch.drift.input_frames_for(MAX_BUFFERED_FRAMES, q.rate()) {
+                        let drop = buffered - ch.drift.input_frames_for(TRIM_TO_FRAMES, q.rate());
                         q.discard_front(drop);
                         ch.dropped_frames += drop as u64;
                     }
                 }
             }
-            let have = if wait { 0 } else { q.frames().min(BLOCK_FRAMES) };
-            if have < BLOCK_FRAMES && have > 0 {
-                ch.underruns += 1;
-            }
             let gain = if ch.control.muted { 0.0 } else { crate::fader::db_to_gain(ch.control.fader_db) };
             let s = &mut self.scratch;
-            s.fill(0.0);
-            for (dst, src) in s.iter_mut().zip(q.samples.iter().take(have * 2)) {
-                *dst = *src;
+            if wait {
+                s.fill(0.0);
+            } else if ch.drift.process(q, s) {
+                ch.underruns += 1;
             }
-            q.discard_front(have);
             // Фильтры работают и на тишине: огибающие гейта/компрессора не обрываются.
             ch.filters.process(s);
             for v in s.iter_mut() {
@@ -279,25 +314,41 @@ mod tests {
             .into()
     }
 
+    /// Порция источника в очередь — как пакет от устройства (без меток времени очередь длиннее
+    /// 100 мс микшер обрезает, поэтому сразу всё класть нельзя).
+    fn feed(q: &mut AudioQueue, src: &mut AudioQueue, frames: usize) {
+        let n = frames.min(src.frames()) * 2;
+        let chunk: Vec<f32> = src.samples.drain(..n).collect();
+        q.push(&chunk, None);
+    }
+
+    /// Первые блоки — разгон ресемплера (его задержка 32 кадра); уровни меряются после.
+    fn warm(m: &mut Mixer, q: &mut AudioQueue, src: &mut AudioQueue, blocks: usize) -> MixBlock {
+        let mut last = None;
+        for _ in 0..blocks {
+            feed(q, src, BLOCK_FRAMES);
+            last = Some(m.mix(&mut [&mut *q]));
+        }
+        last.expect("blocks > 0")
+    }
+
     #[test]
     fn levels_and_gain() {
         let mut m = Mixer::new(1);
-        let mut a = sine(1000.0, 0.5, BLOCK_FRAMES);
-        let b = m.mix(&mut [&mut a]);
+        let (mut src, mut a) = (sine(1000.0, 0.5, BLOCK_FRAMES * 20), AudioQueue::default());
+        let b = warm(&mut m, &mut a, &mut src, 3);
         // Пик синуса 0.5 → −6.02 dBFS, RMS → −9.03 dBFS.
-        assert!((m.channels[0].meter.peak[0] + 6.02).abs() < 0.1);
-        assert!((m.channels[0].meter.rms[0] + 9.03).abs() < 0.1);
+        assert!((m.channels[0].meter.peak[0] + 6.02).abs() < 0.1, "{}", m.channels[0].meter.peak[0]);
+        assert!((m.channels[0].meter.rms[0] + 9.03).abs() < 0.1, "{}", m.channels[0].meter.rms[0]);
         assert!(b.tracks[0].iter().any(|v| v.abs() > 0.4));
         assert!(b.tracks[1].iter().all(|v| *v == 0.0), "дорожка 2 не назначена");
 
         m.channels[0].control.fader_db = -6.0;
-        let mut a = sine(1000.0, 0.5, BLOCK_FRAMES);
-        m.mix(&mut [&mut a]);
+        warm(&mut m, &mut a, &mut src, 1);
         assert!((m.channels[0].meter.peak[0] + 12.04).abs() < 0.15);
 
         m.channels[0].control.muted = true;
-        let mut a = sine(1000.0, 0.5, BLOCK_FRAMES);
-        let b = m.mix(&mut [&mut a]);
+        let b = warm(&mut m, &mut a, &mut src, 1);
         assert_eq!(m.channels[0].meter.peak[0], SILENCE_DB);
         assert!(b.tracks[0].iter().all(|v| *v == 0.0));
     }
@@ -309,8 +360,8 @@ mod tests {
         m.channels[0].filters =
             crate::filters::FilterChain::new(&[AudioFilter { enabled: true, kind: AudioFilterKind::Gain { db: 6.0 } }]);
         m.channels[0].control.fader_db = -6.0;
-        let mut a = sine(1000.0, 0.5, BLOCK_FRAMES);
-        m.mix(&mut [&mut a]);
+        let (mut src, mut a) = (sine(1000.0, 0.5, BLOCK_FRAMES * 10), AudioQueue::default());
+        warm(&mut m, &mut a, &mut src, 3);
         // +6 дБ фильтра и −6 дБ фейдера: пик синуса 0.5 остаётся −6.02 dBFS.
         assert!((m.channels[0].meter.peak[0] + 6.02).abs() < 0.1);
     }
@@ -321,8 +372,9 @@ mod tests {
         let (mut a, mut b2) = (AudioQueue::default(), sine(440.0, 0.1, BLOCK_FRAMES * 30));
         let b = m.mix(&mut [&mut a, &mut b2]);
         assert_eq!(b.tracks[0].len(), BLOCK_FRAMES * 2);
-        // 300 мс в очереди → обрезано до 20 мс, затем забран блок 10 мс.
-        assert_eq!(b2.frames(), TRIM_TO_FRAMES - BLOCK_FRAMES);
+        // 300 мс в очереди → обрезано до 20 мс, затем ресемплер забрал блок (~10 мс).
+        let left = b2.frames();
+        assert!((TRIM_TO_FRAMES - BLOCK_FRAMES - 2..=TRIM_TO_FRAMES - BLOCK_FRAMES).contains(&left), "{left}");
         assert!(m.channels[1].dropped_frames > 0);
         assert_eq!(b.index, 0);
         assert_eq!(m.mix(&mut [&mut a, &mut b2]).index, 1);
@@ -332,11 +384,12 @@ mod tests {
     fn channels_sum_into_tracks() {
         let mut m = Mixer::new(2);
         m.channels[1].control.tracks = 0b11;
-        let mut a: AudioQueue = (0..BLOCK_FRAMES * 2).map(|_| 0.25).collect::<VecDeque<f32>>().into();
-        let mut c: AudioQueue = (0..BLOCK_FRAMES * 2).map(|_| 0.25).collect::<VecDeque<f32>>().into();
+        let mut a: AudioQueue = (0..BLOCK_FRAMES * 20).map(|_| 0.25).collect::<VecDeque<f32>>().into();
+        let mut c: AudioQueue = (0..BLOCK_FRAMES * 20).map(|_| 0.25).collect::<VecDeque<f32>>().into();
+        m.mix(&mut [&mut a, &mut c]);
         let b = m.mix(&mut [&mut a, &mut c]);
-        assert!((b.tracks[0][0] - 0.5).abs() < 1e-6);
-        assert!((b.tracks[1][0] - 0.25).abs() < 1e-6);
+        assert!((b.tracks[0][100] - 0.5).abs() < 1e-3, "{}", b.tracks[0][100]);
+        assert!((b.tracks[1][100] - 0.25).abs() < 1e-3);
     }
 
     #[test]
@@ -366,9 +419,13 @@ mod tests {
         let mut a = stamped(10_000_000, 4800, 0.1);
         let mut b = stamped(9_800_000, 4800, 0.2);
         m.mix_aligned(&mut [&mut a, &mut b], Some(10_000_000));
-        // Канал 1 догнал: отброшено 20 мс (960 кадров) + забран блок.
-        assert_eq!(b.frames(), 4800 - 960 - BLOCK_FRAMES);
-        assert_eq!(a.frames(), 4800 - BLOCK_FRAMES);
+        // Ресемплер задерживает на 32 кадра: звук берётся на столько же раньше шкалы, то есть
+        // у канала 0 ошибка −32 кадра (в допуске), а канал 1 догнал: отброшено 20 мс + 32 кадра.
+        let delay = m.channels[1].drift.delay_frames();
+        let block = 4800 - a.frames();
+        assert!((BLOCK_FRAMES..=BLOCK_FRAMES + 2).contains(&block), "{block}");
+        let consumed = 4800 - 960 - delay - b.frames();
+        assert!((BLOCK_FRAMES..=BLOCK_FRAMES + 2).contains(&consumed), "{consumed}");
 
         // Смещение +30 мс у канала 0: в блок идёт звук на 30 мс старше шкалы — его ещё нет
         // в очереди (начало 1.000 с), значит канал ждёт и в блок не попадает.
@@ -378,6 +435,63 @@ mod tests {
         let blk = m.mix_aligned(&mut [&mut a], Some(10_000_000));
         assert!(blk.tracks[0].iter().all(|v| *v == 0.0));
         assert_eq!(a.frames(), 4800);
+    }
+
+    /// Устройство, чьи часы спешат на 200 ppm: за 2 минуты подстройка ресемплера держит канал
+    /// на шкале без выбрасывания звука, поправка сходится к −200 ppm.
+    #[test]
+    fn drift_is_absorbed_without_drops() {
+        const PPM: f64 = 200.0;
+        let device_rate = 48_000.0 * (1.0 + PPM * 1e-6);
+        let mut m = Mixer::new(1);
+        let mut q = AudioQueue::default();
+        let (mut sent, mut t) = (0u64, 0u64);
+        let delay = 400_000u64; // шкала микшера отстаёт от захвата на 40 мс
+        for block in 0..12_000u64 {
+            // Захват: пакеты по 480 кадров со временем по часам QPC.
+            let now = block * 100_000 + delay;
+            while t <= now + 100_000 {
+                q.push(&[0.1f32; 960], Some(t));
+                sent += 480;
+                t = (sent as f64 / device_rate * 1e7) as u64;
+            }
+            m.mix_aligned(&mut [&mut q], Some(block * 100_000));
+            if block == 1000 {
+                m.channels[0].dropped_frames = 0; // после захвата шкалы
+            }
+        }
+        let ch = &m.channels[0];
+        assert_eq!(ch.dropped_frames, 0, "без выбрасывания звука");
+        assert!((ch.drift.ppm() + PPM).abs() < 20.0, "поправка {} ppm", ch.drift.ppm());
+        let err = q.head_time().map(|h| h as i64 - (11_999 * 100_000 + 100_000) as i64);
+        assert!(err.is_some_and(|e| e.abs() < 10_000), "ошибка {err:?} × 100 нс");
+    }
+
+    /// Устройство 44.1 кГц: синус 1 кГц выходит с тем же уровнем и частотой.
+    #[test]
+    fn device_rate_is_resampled_to_48k() {
+        let (mut q, mut src) = (AudioQueue::default(), AudioQueue::default());
+        q.set_rate(44_100);
+        let samples: Vec<f32> = (0..44_100)
+            .flat_map(|i| {
+                let v = 0.5 * (std::f32::consts::TAU * 1000.0 * i as f32 / 44_100.0).sin();
+                [v, v]
+            })
+            .collect();
+        src.push(&samples, None);
+        let mut m = Mixer::new(1);
+        let mut out = Vec::new();
+        for _ in 0..80 {
+            feed(&mut q, &mut src, 441);
+            out.extend(m.mix(&mut [&mut q]).tracks[0].iter().step_by(2).copied());
+        }
+        let tail = &out[4800..];
+        let peak = tail.iter().fold(0.0f32, |a, v| a.max(v.abs()));
+        assert!((peak - 0.5).abs() < 0.01, "пик {peak}");
+        // 1 кГц на 48 кГц: 2 перехода через ноль на 48 сэмплов.
+        let crossings = tail.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+        let expected = tail.len() / 48;
+        assert!(crossings.abs_diff(expected) <= 1, "{crossings} переходов вместо {expected}");
     }
 
     #[test]

@@ -44,6 +44,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 nnnoiseless = { version = "0.5", default-features = false }
+rubato = { version = "5", default-features = false }
+audioadapter-buffers = "5"
 uuid = { version = "1", features = ["v4", "serde"] }
 fluent-bundle = "0.16"
 unic-langid = "0.9"

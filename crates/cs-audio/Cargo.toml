@@ -17,6 +17,8 @@ parking_lot.workspace = true
 crossbeam-channel.workspace = true
 tracing.workspace = true
 nnnoiseless.workspace = true
+rubato.workspace = true
+audioadapter-buffers.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-core.workspace = true
