@@ -19,7 +19,7 @@ mod text;
 #[cfg(windows)]
 pub use compositor::{Compositor, DrawItem, DrawSource};
 #[cfg(windows)]
-pub use convert::{ColorConverter, ColorParams};
+pub use convert::{ColorConverter, ColorParams, ConvertOptions, ScaleKernel};
 #[cfg(windows)]
 pub use device::{AdapterInfo, DriverKind, GpuDevice, GpuTexture};
 #[cfg(windows)]

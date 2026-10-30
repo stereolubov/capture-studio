@@ -25,7 +25,8 @@ fn encodes_frames_on_gpu() {
     let mut enc = MfH264Encoder::new(&gpu.device, &s).expect("encoder");
     let mut conv = {
         let _g = gpu.lock();
-        ColorConverter::new(&gpu, 1280, 720, ColorParams { bt601: false, full_range: false }).expect("conv")
+        ColorConverter::new(&gpu, 1280, 720, ColorParams { bt601: false, full_range: false }, Default::default())
+            .expect("conv")
     };
     let mut out = Vec::new();
     for i in 0..120i64 {

@@ -7,7 +7,7 @@ use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL_11_1,
 };
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_P010, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{DXGI_ADAPTER_DESC1, IDXGIAdapter1, IDXGIDevice};
 use windows::core::Interface;
 
@@ -165,9 +165,11 @@ impl GpuDevice {
             self.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
             let pitch = m.RowPitch as usize;
             let base = m.pData.cast::<u8>();
-            let mut out = Vec::with_capacity(w * h * 3 / 2);
+            // P010 — 2 байта на отсчёт (little-endian), NV12 — 1.
+            let bytes = if desc.Format == DXGI_FORMAT_P010 { 2 } else { 1 };
+            let mut out = Vec::with_capacity(w * h * 3 / 2 * bytes);
             for y in 0..h + h / 2 {
-                out.extend_from_slice(std::slice::from_raw_parts(base.add(y * pitch), w));
+                out.extend_from_slice(std::slice::from_raw_parts(base.add(y * pitch), w * bytes));
             }
             self.context.Unmap(&staging, 0);
             Ok(out)

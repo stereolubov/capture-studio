@@ -30,6 +30,8 @@ pub struct RecordingConfig {
     pub path: PathBuf,
     pub video: VideoSettings,
     pub color: ColorParams,
+    /// Фильтр масштабирования холста до выходного разрешения (§7.3).
+    pub scale: cs_gpu::ScaleKernel,
     pub audio_kbps: u32,
     /// Маска дорожек аудио (бит 0 — дорожка 1).
     pub tracks: u8,
@@ -119,7 +121,8 @@ impl Recording {
         }
         let converter = {
             let _g = gpu.lock();
-            ColorConverter::new(gpu, cfg.video.width, cfg.video.height, cfg.color)?
+            let options = cs_gpu::ConvertOptions { scale: cfg.scale, ten_bit: false };
+            ColorConverter::new(gpu, cfg.video.width, cfg.video.height, cfg.color, options)?
         };
         let start_ticks = Ticks::now();
         let stop = Arc::new(AtomicBool::new(false));

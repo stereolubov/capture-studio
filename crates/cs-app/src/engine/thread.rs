@@ -439,7 +439,7 @@ impl Worker {
         if self.recording.is_some() || self.recording_starting.is_some() {
             return;
         }
-        use cs_core::config::profile::{ColorRange, ColorSpace, RateControl as Rc, RecordFormat};
+        use cs_core::config::profile::{ColorRange, ColorSpace, RateControl as Rc, RecordFormat, ScaleFilter};
         if let Some(free) = free_mb(&self.recordings_dir)
             && free < STOP_FREE_MB
         {
@@ -468,6 +468,11 @@ impl Worker {
             color: cs_gpu::ColorParams {
                 bt601: p.video.color_space == ColorSpace::Bt601,
                 full_range: p.video.color_range == ColorRange::Full,
+            },
+            scale: match p.video.scale_filter {
+                ScaleFilter::Bilinear => cs_gpu::ScaleKernel::Bilinear,
+                ScaleFilter::Bicubic => cs_gpu::ScaleKernel::Bicubic,
+                ScaleFilter::Lanczos => cs_gpu::ScaleKernel::Lanczos,
             },
             audio_kbps: p.output.audio_bitrate_kbps,
             tracks: p.output.record_tracks,
