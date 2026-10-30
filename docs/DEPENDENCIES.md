@@ -30,6 +30,7 @@
 | (без крейта) объявления AMF `cs-encode/src/amf.rs` | cs-encode | Таблицы методов пяти интерфейсов переписаны с C-раздела заголовков AMF SDK 1.4.36, места проверяются тестом, см. ADR-0013 | MIT (AMD) | `bindgen` (C++-заголовки) |
 | `openh264-sys2` 0.9 (без default-фич, фича `libloading`) | cs-encode | Программный H.264: привязки и загрузка двоичного модуля Cisco со сверкой SHA-256 (ADR-0014); тянет `libloading` (ISC) и `sha2` (MIT/Apache-2.0) | BSD-2-Clause | свои привязки (bindgen + хеш вручную); сборка из исходников (фича `source`) — без патентного покрытия Cisco |
 | `bzip2` 0.6 (бэкенд `libbz2-rs-sys`, чистый Rust) | cs-encode | Распаковка `openh264-*.dll.bz2` с сервера Cisco (ADR-0014) | MIT/Apache-2.0; `libbz2-rs-sys` — bzip2-1.0.6 | свой распаковщик bzip2; Cisco отдаёт модуль только в `.bz2` |
+| `opus-head-sys` 0.3 (без default-фич: без DNN DRED/OSCE) | cs-encode | Opus (§9.2): libopus из исходников, статически; сборка через CMake (ADR-0015) | MIT/Apache-2.0; libopus — BSD-3-Clause | `audiopus_sys` (libopus 1.3, тоже CMake), чистые Rust-реализации (не эталонный кодер) |
 | (без крейта) привязки oneVPL `cs-encode/src/qsv/sys.rs` | cs-encode | Сгенерированы `bindgen` из заголовков oneVPL 2.15.0 (intel/libvpl), диспетчер `libvpl.dll` ставит драйвер Intel, см. ADR-0013 | MIT (Intel) | статическая сборка диспетчера (C++) |
 | `windows-core` 0.62 | cs-audio | Макрос `#[implement]` для COM-обработчика `ActivateAudioInterfaceAsync` (звук приложения, §8.1) — та же версия, что у `windows` | MIT/Apache-2.0 | ручная vtable (небезопасно и громоздко) |
 

@@ -197,7 +197,7 @@ pub fn index<R: Read + Seek>(r: &mut R) -> io::Result<MkvIndex> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mkv::{AudioTrack, MkvWriter, VideoTrack};
+    use crate::mkv::{AudioCodec, AudioTrack, MkvWriter, VideoTrack};
 
     #[test]
     fn roundtrip_with_writer_including_truncated_file() {
@@ -205,7 +205,13 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("t.mkv");
         let v = VideoTrack { width: 640, height: 360, codec_private: vec![1, 2, 3] };
-        let a = AudioTrack { sample_rate: 48000, channels: 2, codec_private: vec![0x11, 0x90], name: "1".into() };
+        let a = AudioTrack {
+            sample_rate: 48000,
+            channels: 2,
+            codec: AudioCodec::Aac,
+            codec_private: vec![0x11, 0x90],
+            name: "1".into(),
+        };
         let mut w = MkvWriter::create(&path, &v, &[a]).expect("create");
         for i in 0..120i64 {
             w.write(1, &[i as u8; 10], i * 33, i % 30 == 0).expect("v");

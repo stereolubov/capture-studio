@@ -408,7 +408,7 @@ pub fn remux(src: &Path, dst: &Path, mut progress: impl FnMut(f32)) -> io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mkv::{AudioTrack, MkvWriter, VideoTrack};
+    use crate::mkv::{AudioCodec, AudioTrack, MkvWriter, VideoTrack};
 
     #[test]
     fn steady_60fps_gets_exact_durations() {
@@ -440,7 +440,13 @@ mod tests {
         let mut w = MkvWriter::create(
             &mkv,
             &VideoTrack { width: 320, height: 240, codec_private: avcc },
-            &[AudioTrack { sample_rate: 48000, channels: 2, codec_private: vec![0x11, 0x90], name: "1".into() }],
+            &[AudioTrack {
+                sample_rate: 48000,
+                channels: 2,
+                codec: AudioCodec::Aac,
+                codec_private: vec![0x11, 0x90],
+                name: "1".into(),
+            }],
         )
         .expect("mkv");
         for i in 0..90i64 {
@@ -472,6 +478,7 @@ mod tests {
             .map(|i| AudioTrack {
                 sample_rate: 48000,
                 channels: 2,
+                codec: AudioCodec::Aac,
                 codec_private: vec![0x11, 0x90],
                 name: format!("Track {i}"),
             })

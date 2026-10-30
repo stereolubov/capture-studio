@@ -5,7 +5,9 @@ use super::{App, centered};
 use crate::i18n::s;
 use crate::theme::{self, Palette};
 use cs_core::Command;
-use cs_core::config::profile::{ColorRange, ColorSpace, EncoderKind, RateControl, RecordFormat, ScaleFilter};
+use cs_core::config::profile::{
+    AudioCodec, ColorRange, ColorSpace, EncoderKind, RateControl, RecordFormat, ScaleFilter,
+};
 use cs_core::config::settings::{ProcessPriority, ThemePref};
 use cs_core::config::{Profile, Settings};
 use cs_core::estimate;
@@ -746,6 +748,23 @@ fn output_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form, live
         let recording = app.engine.state().record.is_active();
         d.profile.output.record_tracks =
             f.tracks(ui, "rec-tracks", &t("field-record-tracks"), d.profile.output.record_tracks, !recording);
+        // Аудиокодек записи (§9.2): Opus — только в MKV, в форматах с MP4 остаётся AAC.
+        let codecs = [AudioCodec::Aac, AudioCodec::Opus];
+        let mut sel = index_of(&codecs, d.profile.output.audio_codec);
+        if f.dropdown(
+            ui,
+            "acodec",
+            &t("field-audio-codec"),
+            &["AAC".into(), t("audio-codec-opus")],
+            &mut sel,
+            !recording,
+        ) {
+            d.profile.output.audio_codec = codecs[sel];
+        }
+        if d.profile.output.audio_codec == AudioCodec::Opus && d.profile.output.record_format != RecordFormat::Mkv {
+            let warn = f.p.warn;
+            f.note(&t("audio-codec-opus-mp4"), warn);
+        }
     }
 }
 

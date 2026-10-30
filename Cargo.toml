@@ -49,6 +49,8 @@ audioadapter-buffers = "5"
 # Программный H.264: только загрузка DLL Cisco (без сборки исходников OpenH264), ADR-0014.
 openh264-sys2 = { version = "0.9", default-features = false, features = ["libloading"] }
 bzip2 = "0.6"
+# Opus (§9.2): libopus из исходников, статически; для сборки нужен CMake (ADR-0015).
+opus-head-sys = { version = "0.3", default-features = false }
 uuid = { version = "1", features = ["v4", "serde"] }
 fluent-bundle = "0.16"
 unic-langid = "0.9"

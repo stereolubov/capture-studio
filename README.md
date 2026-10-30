@@ -35,7 +35,8 @@ Measured on M1 acceptance (1080p60 canvas, 4K display capture): 60.0 fps with 0 
 ## Building
 
 Requires Rust (the version is pinned in `rust-toolchain.toml`; rustup installs it automatically) and the
-MSVC Build Tools. The Windows SDK (`fxc.exe`) is optional — precompiled shader bytecode is in the repo.
+MSVC Build Tools with CMake (the "C++ CMake tools" component; it builds libopus). The Windows SDK
+(`fxc.exe`) is optional — precompiled shader bytecode is in the repo.
 
 ```
 cargo build --release -p cs-app          # target/release/capture-studio.exe
@@ -94,6 +95,9 @@ Capture Studio stands on the shoulders of open-source projects. Many thanks to t
   not part of Capture Studio; bindings via [openh264-rs](https://crates.io/crates/openh264-sys2)
   by Ralf Biedert (BSD-2-Clause), loading via [libloading](https://github.com/nagisa/rust_libloading)
   by Simonas Kazlauskas (ISC);
+- [Opus](https://opus-codec.org/) by Xiph.Org, Skype, Octasic, Jean-Marc Valin, Timothy B. Terriberry and
+  others — the Opus audio encoder (BSD-3-Clause), built via
+  [opus-head-sys](https://github.com/xnorpx/rust-opus) by Marcus Asteborg (MIT / Apache-2.0);
 - [bzip2-rs](https://github.com/trifectatechfoundation/bzip2-rs) and
   [libbzip2-rs](https://github.com/trifectatechfoundation/libbzip2-rs) by the Trifecta Tech Foundation,
   based on bzip2 by Julian Seward — unpacking the OpenH264 download (MIT / Apache-2.0, bzip2-1.0.6);

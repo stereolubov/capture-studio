@@ -546,6 +546,9 @@ impl Worker {
             // Запись — тюнинг «качество».
             nvenc: encoder_options(p),
             audio_kbps: p.output.audio_bitrate_kbps,
+            // Opus — только в MKV без перепаковки (§9.2, ADR-0015).
+            opus: p.output.audio_codec == cs_core::config::profile::AudioCodec::Opus
+                && p.output.record_format == RecordFormat::Mkv,
             tracks: p.output.record_tracks,
             remux: matches!(p.output.record_format, RecordFormat::MkvRemuxMp4 | RecordFormat::Mp4),
             // «MP4» — то же, что MKV с ремуксом, но без исходника.

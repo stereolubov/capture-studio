@@ -12,7 +12,8 @@
 ## Сборка
 
 Нужны Rust (версия фиксирована в `rust-toolchain.toml`, ставится rustup автоматически) и
-MSVC Build Tools. Windows SDK (`fxc.exe`) — необязательно: без него используется
+MSVC Build Tools с CMake (компонент «C++ CMake tools», им собирается libopus). Windows SDK
+(`fxc.exe`) — необязательно: без него используется
 скомпилированный байт-код шейдеров из репозитория.
 
 ```
@@ -72,6 +73,9 @@ Capture Studio построен на открытых проектах. Боль
   входит в Capture Studio; привязки — [openh264-rs](https://crates.io/crates/openh264-sys2),
   Ralf Biedert (BSD-2-Clause), загрузка — [libloading](https://github.com/nagisa/rust_libloading),
   Simonas Kazlauskas (ISC);
+- [Opus](https://opus-codec.org/), Xiph.Org, Skype, Octasic, Jean-Marc Valin, Timothy B. Terriberry и
+  другие — аудиоэнкодер Opus (BSD-3-Clause), сборка через
+  [opus-head-sys](https://github.com/xnorpx/rust-opus), Marcus Asteborg (MIT / Apache-2.0);
 - [bzip2-rs](https://github.com/trifectatechfoundation/bzip2-rs) и
   [libbzip2-rs](https://github.com/trifectatechfoundation/libbzip2-rs), Trifecta Tech Foundation, на
   основе bzip2 Julian Seward — распаковка загруженного OpenH264 (MIT / Apache-2.0, bzip2-1.0.6);

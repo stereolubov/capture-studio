@@ -12,16 +12,39 @@ use cs_core::Event;
 use cs_core::clock::Ticks;
 use cs_encode::VideoEncoder;
 use cs_encode::mf_aac::MfAacEncoder;
+use cs_encode::opus::OpusEncoder;
 use cs_encode::{Packet, VideoSettings, avc};
 use cs_gpu::{ColorConverter, ColorParams, GpuDevice};
 use cs_output::fmp4::Fmp4Writer;
 use cs_output::interleave::Interleaver;
-use cs_output::mkv::{AudioTrack, MkvWriter, VideoTrack};
+use cs_output::mkv::{AudioCodec, AudioTrack, MkvWriter, VideoTrack};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use windows::Win32::Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D};
+
+/// Аудиоэнкодер дорожки (§9.2).
+enum AudioEncoder {
+    Aac(MfAacEncoder),
+    Opus(OpusEncoder),
+}
+
+impl AudioEncoder {
+    fn encode(&mut self, samples: &[f32], pts: i64, out: &mut Vec<Packet>) -> Result<(), cs_encode::EncodeError> {
+        match self {
+            Self::Aac(e) => e.encode(samples, pts, out),
+            Self::Opus(e) => e.encode(samples, pts, out),
+        }
+    }
+
+    fn drain(&mut self, out: &mut Vec<Packet>) -> Result<(), cs_encode::EncodeError> {
+        match self {
+            Self::Aac(e) => e.drain(out),
+            Self::Opus(e) => e.drain(out),
+        }
+    }
+}
 
 /// Сообщение мультиплексору: поток (0 — видео, 1.. — дорожки аудио) и пакет.
 type MuxMsg = (usize, Packet);
@@ -36,6 +59,8 @@ pub struct RecordingConfig {
     pub encoder: cs_encode::EncoderChoice,
     pub nvenc: cs_encode::EncoderOptions,
     pub audio_kbps: u32,
+    /// Opus вместо AAC (только MKV без ремукса).
+    pub opus: bool,
     /// Маска дорожек аудио (бит 0 — дорожка 1).
     pub tracks: u8,
     /// После остановки перепаковать MKV в MP4.
@@ -190,20 +215,50 @@ impl Recording {
             Err(_) => anyhow::bail!("видеоэнкодер не запустился"),
         }
 
-        // Аудиоэнкодеры: по одному AAC на дорожку.
+        // Описание дорожек для мультиплексора: у Opus — OpusHead и задержка кодера.
+        let audio_tracks: Vec<AudioTrack> = if cfg.opus {
+            let probe = OpusEncoder::new(cfg.audio_kbps)?;
+            tracing::info!("запись: звук Opus {} кбит/с, задержка кодера {} отсчётов", cfg.audio_kbps, probe.pre_skip);
+            (0..tracks.len())
+                .map(|i| AudioTrack {
+                    sample_rate: SAMPLE_RATE,
+                    channels: 2,
+                    codec: AudioCodec::Opus { delay_ns: probe.delay_ns() },
+                    codec_private: probe.head(),
+                    name: format!("Track {}", i + 1),
+                })
+                .collect()
+        } else {
+            (0..tracks.len())
+                .map(|i| AudioTrack {
+                    sample_rate: SAMPLE_RATE,
+                    channels: 2,
+                    codec: AudioCodec::Aac,
+                    codec_private: avc::aac_asc(SAMPLE_RATE, 2).to_vec(),
+                    name: format!("Track {}", i + 1),
+                })
+                .collect()
+        };
+
+        // Аудиоэнкодеры: по одному на дорожку.
         if let Some(rx) = audio {
             let atx = mux_tx.clone();
             let astop = stop.clone();
             let tr = tracks.clone();
-            let kbps = cfg.audio_kbps;
+            let (kbps, opus) = (cfg.audio_kbps, cfg.opus);
             let apause = pause.clone();
             threads.push(std::thread::Builder::new().name("encoder-audio".into()).spawn(move || {
-                let mut encs: Vec<MfAacEncoder> = Vec::new();
+                let mut encs: Vec<AudioEncoder> = Vec::new();
                 for _ in &tr {
-                    match MfAacEncoder::new(SAMPLE_RATE, kbps) {
+                    let enc = if opus {
+                        OpusEncoder::new(kbps).map(AudioEncoder::Opus)
+                    } else {
+                        MfAacEncoder::new(SAMPLE_RATE, kbps).map(AudioEncoder::Aac)
+                    };
+                    match enc {
                         Ok(e) => encs.push(e),
                         Err(e) => {
-                            tracing::error!("AAC: {e}");
+                            tracing::error!("аудиоэнкодер: {e}");
                             return;
                         }
                     }
@@ -217,7 +272,7 @@ impl Recording {
                     let pts = to_100ns(block.pts, start_ticks) - apause.total.load(Ordering::Acquire);
                     for (k, (enc, t)) in encs.iter_mut().zip(&tr).enumerate() {
                         if let Err(e) = enc.encode(&block.block.tracks[*t], pts, &mut out) {
-                            tracing::warn!("AAC: {e}");
+                            tracing::warn!("аудиоэнкодер: {e}");
                         }
                         for p in out.drain(..) {
                             let _ = atx.send((k + 1, p));
@@ -239,9 +294,8 @@ impl Recording {
         let mstats = stats.clone();
         let (w, h) = (vs.width, vs.height);
         let (fragmented, frame_100ns) = (cfg.fragmented, vs.frame_duration());
-        let n_audio = tracks.len();
         threads.push(std::thread::Builder::new().name("muxer".into()).spawn(move || {
-            if let Err(e) = mux_loop(&path, mux_rx, (w, h), n_audio, (fragmented, frame_100ns), &mstats) {
+            if let Err(e) = mux_loop(&path, mux_rx, (w, h), &audio_tracks, (fragmented, frame_100ns), &mstats) {
                 tracing::error!("запись {}: {e}", path.display());
                 let _ = events.send(Event::Error(format!("запись: {e}")));
             }
@@ -391,10 +445,11 @@ fn mux_loop(
     path: &std::path::Path,
     rx: Receiver<MuxMsg>,
     (w, h): (u32, u32),
-    n_audio: usize,
+    audio: &[AudioTrack],
     (fragmented, frame_100ns): (bool, i64),
     stats: &RecordStats,
 ) -> std::io::Result<()> {
+    let n_audio = audio.len();
     let mut il: Interleaver<Packet> = Interleaver::new(1 + n_audio, 1_000);
     let mut writer: Option<Container> = None;
     // Аудио до первого ключевого кадра видео копится, затем отбрасывается всё, что раньше него.
@@ -422,19 +477,11 @@ fn mux_loop(
                 && p.keyframe
                 && let Some((sps, pps)) = avc::find_parameter_sets(&p.data)
             {
-                let audio: Vec<AudioTrack> = (0..n_audio)
-                    .map(|i| AudioTrack {
-                        sample_rate: SAMPLE_RATE,
-                        channels: 2,
-                        codec_private: avc::aac_asc(SAMPLE_RATE, 2).to_vec(),
-                        name: format!("Track {}", i + 1),
-                    })
-                    .collect();
                 let video = VideoTrack { width: w, height: h, codec_private: avc::avcc(&sps, &pps) };
                 writer = Some(if fragmented {
-                    Container::Fmp4(Fmp4Writer::create(path, &video, &audio, p.pts, p.dts, frame_100ns)?)
+                    Container::Fmp4(Fmp4Writer::create(path, &video, audio, p.pts, p.dts, frame_100ns)?)
                 } else {
-                    Container::Mkv(MkvWriter::create(path, &video, &audio)?)
+                    Container::Mkv(MkvWriter::create(path, &video, audio)?)
                 });
                 first_video_ms = Some(ms(&p));
                 for (s, q) in pending.drain(..) {

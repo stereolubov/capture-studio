@@ -19,6 +19,7 @@ tracing.workspace = true
 windows-core.workspace = true
 openh264-sys2.workspace = true
 bzip2.workspace = true
+opus-head-sys.workspace = true
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D11",

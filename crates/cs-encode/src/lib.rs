@@ -3,7 +3,7 @@
 //! Аппаратный H.264: прямой NVENC (`nvenc`, GPU NVIDIA), AMF (`amf`, GPU AMD), Quick Sync через
 //! oneVPL (`qsv`, GPU Intel) и MFT Media Foundation (`mf_h264`, любой GPU); вход — NV12-текстура
 //! D3D11; программный OpenH264 от Cisco (`openh264`) — последний резерв. AAC-LC через MF
-//! (`mf_aac`). Время — в единицах 100 нс от начала записи.
+//! (`mf_aac`), Opus через libopus (`opus`). Время — в единицах 100 нс от начала записи.
 
 #[cfg(windows)]
 pub mod amf;
@@ -18,6 +18,8 @@ mod mfutil;
 pub mod nvenc;
 #[cfg(windows)]
 pub mod openh264;
+#[cfg(windows)]
+pub mod opus;
 #[cfg(windows)]
 pub mod probe;
 #[cfg(windows)]

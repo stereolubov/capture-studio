@@ -7,7 +7,7 @@
 //! «хвост». Время: видео — по декодированию от первого кадра, сдвиги показа (B-кадры) — в `trun`,
 //! показ первого кадра — в `elst`; звук — от первого показанного кадра видео (`tfdt`).
 
-use crate::mkv::{AudioTrack, VideoTrack};
+use crate::mkv::{AudioCodec, AudioTrack, VideoTrack};
 use crate::mp4::{MOVIE_TIMESCALE, VIDEO_TIMESCALE, avc1_entry, bx, full, matrix, mp4a_entry, stsd_with, u16b, u32b};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -84,6 +84,10 @@ impl Fmp4Writer {
         dts: i64,
         frame_100ns: i64,
     ) -> io::Result<Self> {
+        // Opus пишется только в MKV (ADR-0015).
+        if audio.iter().any(|a| a.codec != AudioCodec::Aac) {
+            return Err(io::Error::new(io::ErrorKind::Unsupported, "fMP4: только AAC"));
+        }
         let mut out = BufWriter::with_capacity(1 << 20, File::create(path)?);
         let ftyp = bx(b"ftyp", &[b"isom".as_slice(), &u32b(512), b"isom", b"iso6", b"avc1", b"mp41"].concat());
         out.write_all(&ftyp)?;
@@ -303,8 +307,13 @@ mod tests {
         let path = dir.join("a.mp4");
         let avcc = vec![1, 0x64, 0, 0x28, 0xFF, 0xE1, 0, 4, 0x67, 0x64, 0, 0x28, 1, 0, 4, 0x68, 0xEE, 0x3C, 0x80];
         let video = VideoTrack { width: 320, height: 240, codec_private: avcc };
-        let audio =
-            [AudioTrack { sample_rate: 48_000, channels: 2, codec_private: vec![0x11, 0x90], name: "1".into() }];
+        let audio = [AudioTrack {
+            sample_rate: 48_000,
+            channels: 2,
+            codec: AudioCodec::Aac,
+            codec_private: vec![0x11, 0x90],
+            name: "1".into(),
+        }];
         let fd = 166_667i64;
         // Порядок показа 0,1,2,… → порядок декодирования 0,3,1,2,6,4,5,…; DTS — сдвиг на кадр.
         let mut order = vec![0i64];

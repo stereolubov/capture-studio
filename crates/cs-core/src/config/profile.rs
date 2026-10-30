@@ -59,6 +59,16 @@ impl RateControl {
     }
 }
 
+/// Аудиокодек записи (§9.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioCodec {
+    #[default]
+    Aac,
+    /// Только в MKV; в форматах с MP4 пишется AAC.
+    Opus,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordFormat {
@@ -91,6 +101,7 @@ pub struct OutputSettings {
     /// Битовая маска дорожек записи (1–6).
     pub record_tracks: u8,
     pub audio_bitrate_kbps: u32,
+    pub audio_codec: AudioCodec,
     /// Удалять MKV после успешного ремукса в MP4 (§10.1, по умолчанию выкл.).
     pub delete_mkv_after_remux: bool,
 }
@@ -112,6 +123,7 @@ impl Default for OutputSettings {
             separate_record_encoder: false,
             record_tracks: 0b1,
             audio_bitrate_kbps: 160,
+            audio_codec: AudioCodec::Aac,
             delete_mkv_after_remux: false,
         }
     }

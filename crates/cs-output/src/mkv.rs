@@ -97,12 +97,22 @@ pub struct VideoTrack {
     pub codec_private: Vec<u8>,
 }
 
-/// Аудиодорожка AAC.
+/// Кодек аудиодорожки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AudioCodec {
+    #[default]
+    Aac,
+    /// Opus (только MKV): задержка кодера, нс — `CodecDelay`.
+    Opus { delay_ns: u64 },
+}
+
+/// Аудиодорожка.
 #[derive(Debug, Clone)]
 pub struct AudioTrack {
     pub sample_rate: u32,
     pub channels: u8,
-    /// `AudioSpecificConfig`.
+    pub codec: AudioCodec,
+    /// AAC — `AudioSpecificConfig`, Opus — `OpusHead`.
     pub codec_private: Vec<u8>,
     pub name: String,
 }
@@ -176,13 +186,20 @@ impl MkvWriter {
         entries.extend(element(0xAE, &v));
         for (i, a) in audio.iter().enumerate() {
             let n = (i + 2) as u64;
+            let codec = match a.codec {
+                AudioCodec::Aac => string(0x86, "A_AAC"),
+                // Opus: задержка кодера и предкрутка 80 мс перед точкой перемотки (RFC 7845 / Matroska).
+                AudioCodec::Opus { delay_ns } => {
+                    [string(0x86, "A_OPUS"), uint(0x56AA, delay_ns), uint(0x56BB, 80_000_000)].concat()
+                }
+            };
             let e = [
                 uint(0xD7, n),
                 uint(0x73C5, n),
                 uint(0x83, 2),
                 uint(0x9C, 0),
                 string(0x536E, &a.name),
-                string(0x86, "A_AAC"),
+                codec,
                 element(0x63A2, &a.codec_private),
                 element(0xE1, &[float(0xB5, f64::from(a.sample_rate)), uint(0x9F, u64::from(a.channels))].concat()),
             ]
@@ -303,10 +320,13 @@ mod tests {
             height: 720,
             codec_private: vec![1, 0x64, 0, 0x28, 0xFF, 0xE1, 0, 1, 0x67, 1, 0, 1, 0x68],
         };
-        let a =
-            AudioTrack {
-                sample_rate: 48000, channels: 2, codec_private: vec![0x11, 0x90], name: "Дорожка 1".into()
-            };
+        let a = AudioTrack {
+            sample_rate: 48000,
+            channels: 2,
+            codec: AudioCodec::Aac,
+            codec_private: vec![0x11, 0x90],
+            name: "Дорожка 1".into(),
+        };
         let mut w = MkvWriter::create(&path, &v, &[a]).expect("create");
         for i in 0..300i64 {
             w.write(1, &[0, 0, 0, 2, 0x65, 0x88], i * 16, i % 60 == 0).expect("video");
