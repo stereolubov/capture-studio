@@ -3,12 +3,14 @@
 use crate::{GpuError, Result};
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D::{
-    D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0,
-    D3D_FEATURE_LEVEL_11_1,
+    D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN, D3D_DRIVER_TYPE_WARP, D3D_FEATURE_LEVEL,
+    D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
 };
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_P010, DXGI_SAMPLE_DESC};
-use windows::Win32::Graphics::Dxgi::{DXGI_ADAPTER_DESC1, IDXGIAdapter1, IDXGIDevice};
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, DXGI_ADAPTER_DESC1, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice, IDXGIFactory1,
+};
 use windows::core::Interface;
 
 /// Тип драйвера.
@@ -84,31 +86,8 @@ impl GpuDevice {
                 DriverKind::Hardware => D3D_DRIVER_TYPE_HARDWARE,
                 DriverKind::Warp => D3D_DRIVER_TYPE_WARP,
             };
-            match create(driver) {
-                Ok((device, context, fl)) => {
-                    let adapter = adapter_info(&device, fl).unwrap_or(AdapterInfo {
-                        name: "unknown".into(),
-                        vendor_id: 0,
-                        device_id: 0,
-                        dedicated_video_mb: 0,
-                        feature_level: fl,
-                    });
-                    tracing::info!(
-                        "D3D11: {} ({}), VRAM {} МБ, FL {:x}, драйвер {:?}",
-                        adapter.name,
-                        adapter.vendor(),
-                        adapter.dedicated_video_mb,
-                        adapter.feature_level,
-                        kind
-                    );
-                    // SAFETY: запрос интерфейса у живого контекста; ошибка — не критична (старые драйверы).
-                    if let Ok(mt) = context.cast::<ID3D11Multithread>() {
-                        unsafe {
-                            let _ = mt.SetMultithreadProtected(true);
-                        }
-                    }
-                    return Ok(Self { device, context, kind, adapter, lock: parking_lot::Mutex::new(()) });
-                }
+            match create(None, driver) {
+                Ok((device, context, fl)) => return Ok(Self::finish(device, context, fl, kind)),
                 Err(e) => {
                     tracing::warn!("D3D11CreateDevice({kind:?}) не удалось: {e}");
                     last_err = e.to_string();
@@ -116,6 +95,47 @@ impl GpuDevice {
             }
         }
         Err(GpuError::NoDevice(last_err))
+    }
+
+    /// Аппаратное устройство на первом адаптере производителя `vendor_id` (PCI-код: 0x8086 —
+    /// Intel, 0x1002 — AMD, 0x10DE — NVIDIA). Для проверки энкодеров на втором GPU.
+    pub fn on_vendor(vendor_id: u32) -> Result<Self> {
+        // SAFETY: перечисление адаптеров DXGI; описание заполняется целиком.
+        let adapter = unsafe {
+            let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| GpuError::NoDevice(e.to_string()))?;
+            (0..)
+                .map_while(|i| factory.EnumAdapters1(i).ok())
+                .find(|a| a.GetDesc1().is_ok_and(|d| d.VendorId == vendor_id))
+        };
+        let adapter = adapter.ok_or_else(|| GpuError::NoDevice(format!("нет адаптера {vendor_id:04x}")))?;
+        let (device, context, fl) =
+            create(Some(&adapter), D3D_DRIVER_TYPE_UNKNOWN).map_err(|e| GpuError::NoDevice(e.to_string()))?;
+        Ok(Self::finish(device, context, fl, DriverKind::Hardware))
+    }
+
+    fn finish(device: ID3D11Device, context: ID3D11DeviceContext, fl: u32, kind: DriverKind) -> Self {
+        let adapter = adapter_info(&device, fl).unwrap_or(AdapterInfo {
+            name: "unknown".into(),
+            vendor_id: 0,
+            device_id: 0,
+            dedicated_video_mb: 0,
+            feature_level: fl,
+        });
+        tracing::info!(
+            "D3D11: {} ({}), VRAM {} МБ, FL {:x}, драйвер {:?}",
+            adapter.name,
+            adapter.vendor(),
+            adapter.dedicated_video_mb,
+            adapter.feature_level,
+            kind
+        );
+        // SAFETY: запрос интерфейса у живого контекста; ошибка — не критична (старые драйверы).
+        if let Ok(mt) = context.cast::<ID3D11Multithread>() {
+            unsafe {
+                let _ = mt.SetMultithreadProtected(true);
+            }
+        }
+        Self { device, context, kind, adapter, lock: parking_lot::Mutex::new(()) }
     }
 
     /// Чтение текстуры RGBA8/BGRA8 в память — только для тестов и диагностики:
@@ -235,7 +255,10 @@ impl GpuDevice {
     }
 }
 
-fn create(driver: D3D_DRIVER_TYPE) -> windows::core::Result<(ID3D11Device, ID3D11DeviceContext, u32)> {
+fn create(
+    adapter: Option<&IDXGIAdapter1>,
+    driver: D3D_DRIVER_TYPE,
+) -> windows::core::Result<(ID3D11Device, ID3D11DeviceContext, u32)> {
     let levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
     let flags: D3D11_CREATE_DEVICE_FLAG = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
     let mut device = None;
@@ -244,8 +267,9 @@ fn create(driver: D3D_DRIVER_TYPE) -> windows::core::Result<(ID3D11Device, ID3D1
     // SAFETY: все выходные указатели — на локальные Option/значения, живущие
     // во время вызова; массив уровней валиден.
     unsafe {
+        let adapter: Option<IDXGIAdapter> = adapter.and_then(|a| a.cast().ok());
         D3D11CreateDevice(
-            None,
+            adapter.as_ref(),
             driver,
             HMODULE::default(),
             flags,

@@ -11,7 +11,7 @@
 
 pub mod sys;
 
-use crate::{EncodeError, Packet, RateControl, VideoSettings};
+use crate::{EncodeError, EncoderOptions, H264Profile, MAX_B_FRAMES, Packet, RateControl, VideoSettings};
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use sys::*;
@@ -20,36 +20,6 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::core::{Interface, s, w};
 
-/// Профиль H.264.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum H264Profile {
-    Baseline,
-    Main,
-    High,
-}
-
-/// Параметры NVENC сверх общих (§9.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NvencOptions {
-    /// Пресет P1 (быстрее) … P7 (качественнее).
-    pub preset: u8,
-    pub profile: H264Profile,
-    /// Тюнинг «низкая задержка» (трансляция) вместо «высокое качество» (запись).
-    pub low_latency: bool,
-    /// Анализ наперёд (лучше распределение битрейта, +задержка на `LOOKAHEAD_FRAMES`).
-    pub lookahead: bool,
-    /// B-кадров подряд (0–4): лучше сжатие, +задержка на столько же кадров.
-    pub b_frames: u8,
-}
-
-impl Default for NvencOptions {
-    fn default() -> Self {
-        Self { preset: 5, profile: H264Profile::High, low_latency: false, lookahead: false, b_frames: 0 }
-    }
-}
-
-/// Наибольшее число B-кадров подряд.
-pub const MAX_B_FRAMES: u8 = 4;
 /// Глубина анализа наперёд, кадров.
 pub const LOOKAHEAD_FRAMES: u16 = 8;
 /// Минимальная версия API (12.0): `(major << 4) | minor`.
@@ -59,7 +29,7 @@ const MAX_QUEUED: usize = 8;
 
 /// Сколько кадров NVENC держит у себя (вход уже отдан, пакета ещё нет): для размера пула
 /// текстур конвертера.
-pub fn pipeline_depth(opts: &NvencOptions) -> usize {
+pub fn pipeline_depth(opts: &EncoderOptions) -> usize {
     usize::from(if opts.lookahead { LOOKAHEAD_FRAMES } else { 0 }) + usize::from(opts.b_frames.min(MAX_B_FRAMES)) + 2
 }
 
@@ -213,7 +183,7 @@ impl NvencEncoder {
         })
     }
 
-    pub fn new(device: &ID3D11Device, s: &VideoSettings, opts: &NvencOptions) -> Result<Self, EncodeError> {
+    pub fn new(device: &ID3D11Device, s: &VideoSettings, opts: &EncoderOptions) -> Result<Self, EncodeError> {
         let api = load()?;
         let mut enc = Self {
             api,

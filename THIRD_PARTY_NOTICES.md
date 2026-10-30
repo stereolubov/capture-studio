@@ -26,6 +26,8 @@ release builds.
 | [parking_lot](https://github.com/Amanieu/parking_lot) | Amanieu d'Antras | MIT OR Apache-2.0 | Synchronization primitives |
 | [crossbeam-channel](https://github.com/crossbeam-rs/crossbeam) | The Crossbeam Project Developers | MIT OR Apache-2.0 | Inter-thread queues |
 | NVIDIA Video Codec SDK header `nvEncodeAPI.h` (via [nv-codec-headers](https://github.com/FFmpeg/nv-codec-headers)) — Rust bindings in `crates/cs-encode/src/nvenc/sys.rs` are generated from it | NVIDIA Corporation | MIT (notice below) | NVENC hardware encoder |
+| [AMD AMF SDK](https://github.com/GPUOpen-LibrariesAndSDKs/AMF) headers (v1.4.36) — interface declarations in `crates/cs-encode/src/amf.rs` are written from them | Advanced Micro Devices, Inc. | MIT (notice below) | AMF hardware encoder |
+| [Intel® Video Processing Library](https://github.com/intel/libvpl) headers (v2.15.0) — Rust bindings in `crates/cs-encode/src/qsv/sys.rs` are generated from them | Intel Corporation | MIT (notice below) | Quick Sync Video hardware encoder |
 | [uuid](https://github.com/uuid-rs/uuid) | Ashley Mannix, Dylan DPC, Hunar Roop Kahlon | Apache-2.0 OR MIT | Scene and source identifiers |
 
 ## Fonts
@@ -39,6 +41,48 @@ release builds.
 
 ```
 Copyright (c) 2010-2022 NVIDIA Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or
+substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+## AMD AMF SDK headers (MIT)
+
+```
+Copyright (c) 2018 Advanced Micro Devices, Inc. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute,
+sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or
+substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+## Intel® Video Processing Library headers (MIT)
+
+```
+Copyright (c) 2020 Intel Corporation
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
 associated documentation files (the "Software"), to deal in the Software without restriction,

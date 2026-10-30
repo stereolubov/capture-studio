@@ -8,7 +8,6 @@ use crate::mfutil::{pack, sample_bytes, startup, variant_bool, variant_u32};
 use crate::{EncodeError, Packet, RateControl, VideoSettings};
 use std::collections::VecDeque;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
-use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::core::Interface;
@@ -30,18 +29,6 @@ pub struct MfH264Encoder {
     pub dropped: u64,
 }
 
-fn adapter_luid(device: &ID3D11Device) -> Option<[u8; 8]> {
-    // SAFETY: запрос описания адаптера у живого устройства.
-    unsafe {
-        let desc = device.cast::<IDXGIDevice>().ok()?.GetAdapter().ok()?.GetDesc().ok()?;
-        let l = desc.AdapterLuid;
-        let mut b = [0u8; 8];
-        b[..4].copy_from_slice(&l.LowPart.to_le_bytes());
-        b[4..].copy_from_slice(&l.HighPart.to_le_bytes());
-        Some(b)
-    }
-}
-
 /// Находит аппаратный H.264-энкодер на адаптере устройства.
 fn find_encoder(device: &ID3D11Device) -> Result<(IMFTransform, String), EncodeError> {
     let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
@@ -51,7 +38,7 @@ fn find_encoder(device: &ID3D11Device) -> Result<(IMFTransform, String), EncodeE
         let mut attrs = None;
         MFCreateAttributes(&mut attrs, 1)?;
         let attrs = attrs.ok_or_else(|| EncodeError::Unavailable("MFCreateAttributes".into()))?;
-        if let Some(luid) = adapter_luid(device) {
+        if let Some(luid) = crate::adapter_luid(device) {
             attrs.SetBlob(&MFT_ENUM_ADAPTER_LUID, &luid)?;
         }
         let mut list: *mut Option<IMFActivate> = std::ptr::null_mut();

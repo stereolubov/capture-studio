@@ -442,7 +442,7 @@ impl Worker {
         use cs_core::config::profile::{
             ColorRange, ColorSpace, EncoderKind, RateControl as Rc, RecordFormat, ScaleFilter,
         };
-        use cs_encode::nvenc::{H264Profile, NvencOptions};
+        use cs_encode::{EncoderOptions, H264Profile};
         if let Some(free) = free_mb(&self.recordings_dir)
             && free < STOP_FREE_MB
         {
@@ -482,13 +482,13 @@ impl Worker {
             encoder: match p.output.encoder {
                 EncoderKind::Auto => cs_encode::EncoderChoice::Auto,
                 EncoderKind::Nvenc => cs_encode::EncoderChoice::Nvenc,
-                // AMF, QSV и программный — дальше по плану M2; пока аппаратный MFT.
-                EncoderKind::MediaFoundation | EncoderKind::Amf | EncoderKind::Qsv | EncoderKind::Software => {
-                    cs_encode::EncoderChoice::MediaFoundation
-                }
+                EncoderKind::Amf => cs_encode::EncoderChoice::Amf,
+                EncoderKind::Qsv => cs_encode::EncoderChoice::Qsv,
+                // Программный OpenH264 — дальше по плану M2; пока аппаратный MFT.
+                EncoderKind::MediaFoundation | EncoderKind::Software => cs_encode::EncoderChoice::MediaFoundation,
             },
             // Запись — тюнинг «качество».
-            nvenc: NvencOptions {
+            nvenc: EncoderOptions {
                 preset: p.output.preset,
                 profile: match p.output.h264_profile.as_str() {
                     "baseline" => H264Profile::Baseline,

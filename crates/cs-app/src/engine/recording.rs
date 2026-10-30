@@ -34,7 +34,7 @@ pub struct RecordingConfig {
     /// Фильтр масштабирования холста до выходного разрешения (§7.3).
     pub scale: cs_gpu::ScaleKernel,
     pub encoder: cs_encode::EncoderChoice,
-    pub nvenc: cs_encode::nvenc::NvencOptions,
+    pub nvenc: cs_encode::EncoderOptions,
     pub audio_kbps: u32,
     /// Маска дорожек аудио (бит 0 — дорожка 1).
     pub tracks: u8,
@@ -127,12 +127,7 @@ impl Recording {
         let converter = {
             let _g = gpu.lock();
             // Пул текстур — с запасом на кадры внутри энкодера (NVENC с анализом наперёд держит больше).
-            let pool = cs_gpu::CONVERT_POOL
-                + if cfg.encoder == cs_encode::EncoderChoice::MediaFoundation {
-                    0
-                } else {
-                    cs_encode::nvenc::pipeline_depth(&cfg.nvenc)
-                };
+            let pool = cs_gpu::CONVERT_POOL + cs_encode::pipeline_depth(cfg.encoder, &cfg.nvenc);
             let options = cs_gpu::ConvertOptions { scale: cfg.scale, pool, ..Default::default() };
             ColorConverter::new(gpu, cfg.video.width, cfg.video.height, cfg.color, options)?
         };

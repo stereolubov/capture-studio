@@ -85,6 +85,10 @@ Capture Studio stands on the shoulders of open-source projects. Many thanks to t
   [RNNoise](https://github.com/xiph/rnnoise) by Jean-Marc Valin, Mozilla and the Xiph.Org Foundation —
   noise suppression (BSD-3-Clause);
 - NVIDIA Video Codec SDK header `nvEncodeAPI.h` — bindings for the NVENC encoder (MIT);
+- [AMD AMF SDK](https://github.com/GPUOpen-LibrariesAndSDKs/AMF) headers by Advanced Micro Devices —
+  interface declarations for the AMF encoder (MIT);
+- [Intel® Video Processing Library (oneVPL)](https://github.com/intel/libvpl) headers by Intel —
+  bindings for the Quick Sync Video encoder (MIT);
 - [image](https://github.com/image-rs/image), [fluent-rs](https://github.com/projectfluent/fluent-rs),
   [serde](https://github.com/serde-rs/serde), [toml](https://github.com/toml-rs/toml),
   [tracing](https://github.com/tokio-rs/tracing) and other crates (MIT / Apache-2.0);

@@ -4,8 +4,9 @@
 
 #![cfg(windows)]
 
+use cs_encode::EncoderOptions as NvencOptions;
 use cs_encode::avc;
-use cs_encode::nvenc::{NvencEncoder, NvencOptions, pipeline_depth};
+use cs_encode::nvenc::{NvencEncoder, pipeline_depth};
 use cs_encode::{RateControl, VideoSettings};
 use cs_gpu::{ColorConverter, ColorParams, ConvertOptions, DriverKind, GpuDevice};
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;

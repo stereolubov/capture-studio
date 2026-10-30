@@ -63,6 +63,10 @@ Capture Studio построен на открытых проектах. Боль
   [RNNoise](https://github.com/xiph/rnnoise) (Jean-Marc Valin, Mozilla, Xiph.Org Foundation) —
   шумоподавление (BSD-3-Clause);
 - заголовок NVIDIA Video Codec SDK `nvEncodeAPI.h` — привязки к энкодеру NVENC (MIT);
+- заголовки [AMD AMF SDK](https://github.com/GPUOpen-LibrariesAndSDKs/AMF), Advanced Micro Devices —
+  объявления интерфейсов энкодера AMF (MIT);
+- заголовки [Intel® Video Processing Library (oneVPL)](https://github.com/intel/libvpl), Intel —
+  привязки к энкодеру Quick Sync Video (MIT);
 - [image](https://github.com/image-rs/image), [fluent-rs](https://github.com/projectfluent/fluent-rs),
   [serde](https://github.com/serde-rs/serde), [toml](https://github.com/toml-rs/toml),
   [tracing](https://github.com/tokio-rs/tracing) и другие крейты (MIT / Apache-2.0);
