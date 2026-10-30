@@ -49,4 +49,23 @@ capture-studio.exe --screenshot 1c settings.png --theme light --scale 1.5 --lang
 
 ## Лицензия
 
-MIT — см. [`LICENSE`](LICENSE). Шрифты IBM Plex Sans и JetBrains Mono — SIL OFL 1.1.
+MIT — см. [`LICENSE`](LICENSE).
+
+## Сторонние компоненты
+
+Capture Studio построен на открытых проектах. Большое спасибо их авторам:
+
+- [egui](https://github.com/emilk/egui), Emil Ernerfeldt — интерфейс (MIT / Apache-2.0);
+- [windows-rs](https://github.com/microsoft/windows-rs), Microsoft — привязки к Windows API (MIT / Apache-2.0);
+- [rubato](https://github.com/HEnquist/rubato), Henrik Enquist — ресемплинг звука и компенсация дрейфа
+  часов (MIT / Apache-2.0);
+- [nnnoiseless](https://github.com/jneem/nnnoiseless), Joe Neeman — порт на Rust
+  [RNNoise](https://github.com/xiph/rnnoise) (Jean-Marc Valin, Mozilla, Xiph.Org Foundation) —
+  шумоподавление (BSD-3-Clause);
+- [image](https://github.com/image-rs/image), [fluent-rs](https://github.com/projectfluent/fluent-rs),
+  [serde](https://github.com/serde-rs/serde), [toml](https://github.com/toml-rs/toml),
+  [tracing](https://github.com/tokio-rs/tracing) и другие крейты (MIT / Apache-2.0);
+- шрифты [IBM Plex Sans](https://github.com/IBM/plex) и [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)
+  (SIL Open Font License 1.1).
+
+Полный список с авторами и тексты уведомлений лицензий — в [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

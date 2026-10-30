@@ -71,4 +71,23 @@ Documentation (in Russian): [architecture decisions](docs/adr), [dependencies](d
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE). Bundled fonts IBM Plex Sans and JetBrains Mono are under the SIL OFL 1.1.
+MIT — see [`LICENSE`](LICENSE).
+
+## Third-party software
+
+Capture Studio stands on the shoulders of open-source projects. Many thanks to their authors:
+
+- [egui](https://github.com/emilk/egui) by Emil Ernerfeldt — the user interface (MIT / Apache-2.0);
+- [windows-rs](https://github.com/microsoft/windows-rs) by Microsoft — Windows API bindings (MIT / Apache-2.0);
+- [rubato](https://github.com/HEnquist/rubato) by Henrik Enquist — audio resampling and clock-drift
+  compensation (MIT / Apache-2.0);
+- [nnnoiseless](https://github.com/jneem/nnnoiseless) by Joe Neeman, a Rust port of
+  [RNNoise](https://github.com/xiph/rnnoise) by Jean-Marc Valin, Mozilla and the Xiph.Org Foundation —
+  noise suppression (BSD-3-Clause);
+- [image](https://github.com/image-rs/image), [fluent-rs](https://github.com/projectfluent/fluent-rs),
+  [serde](https://github.com/serde-rs/serde), [toml](https://github.com/toml-rs/toml),
+  [tracing](https://github.com/tokio-rs/tracing) and other crates (MIT / Apache-2.0);
+- fonts [IBM Plex Sans](https://github.com/IBM/plex) and [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)
+  (SIL Open Font License 1.1).
+
+The full list with authors and the license notices is in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
