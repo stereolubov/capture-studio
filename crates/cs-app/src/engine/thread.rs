@@ -485,7 +485,7 @@ impl Worker {
                     cs_encode::EncoderChoice::MediaFoundation
                 }
             },
-            // Запись — тюнинг «качество»; B-кадры пока не включаются (MP4 без `ctts`, пункт 2.11).
+            // Запись — тюнинг «качество».
             nvenc: NvencOptions {
                 preset: p.output.preset,
                 profile: match p.output.h264_profile.as_str() {
@@ -495,6 +495,7 @@ impl Worker {
                 },
                 low_latency: false,
                 lookahead: p.output.lookahead,
+                b_frames: p.output.b_frames,
             },
             audio_kbps: p.output.audio_bitrate_kbps,
             tracks: p.output.record_tracks,

@@ -4,6 +4,10 @@
 //! (формат `avc1`), аудио — сырые кадры AAC. Таблицы: `stts` (длительности), `stss` (ключевые),
 //! `stsz`, `stsc` (1 кадр на чанк), `co64`. Смещение начала аудио относительно видео
 //! передаётся списком правок `elst`.
+//!
+//! B-кадры: MKV хранит кадры в порядке декодирования с временем показа. Если времена идут не по
+//! возрастанию, время декодирования восстанавливается (отсортированные времена показа со сдвигом,
+//! чтобы декодирование не опережало показ), разница пишется в `ctts`, а сдвиг — в `elst` видео.
 
 use crate::mkv_read::{self, Frame, TrackInfo};
 use std::fs::File;
@@ -51,6 +55,10 @@ struct Track<'a> {
     durations: Vec<u32>,
     /// Начало дорожки относительно начала фильма, мс.
     start_ms: i64,
+    /// Сдвиги показа относительно декодирования (`ctts`), если кадры переставлены.
+    ctts: Option<Vec<u32>>,
+    /// Время показа первого кадра на шкале декодирования (в `timescale`) — для `elst`.
+    shift: u32,
 }
 
 impl Track<'_> {
@@ -61,6 +69,23 @@ impl Track<'_> {
     fn is_video(&self) -> bool {
         self.info.kind == 1
     }
+}
+
+/// `ctts` версии 0: серии одинаковых сдвигов.
+fn ctts(offsets: &[u32]) -> Vec<u8> {
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for &o in offsets {
+        match runs.last_mut() {
+            Some((n, v)) if *v == o => *n += 1,
+            _ => runs.push((1, o)),
+        }
+    }
+    let mut p = u32b(runs.len() as u32).to_vec();
+    for (n, v) in runs {
+        p.extend_from_slice(&u32b(n));
+        p.extend_from_slice(&u32b(v));
+    }
+    full(b"ctts", 0, 0, &p)
 }
 
 fn stts(durations: &[u32]) -> Vec<u8> {
@@ -172,6 +197,9 @@ fn trak(t: &Track, offsets: &[u64], movie_duration_ms: u64) -> Vec<u8> {
         co64.extend_from_slice(&o.to_be_bytes());
     }
     let mut stbl = [stsd(t), stts(&t.durations)].concat();
+    if let Some(c) = &t.ctts {
+        stbl.extend(ctts(c));
+    }
     if t.is_video() {
         let keys: Vec<u32> =
             t.frames.iter().enumerate().filter(|(_, f)| f.keyframe).map(|(i, _)| i as u32 + 1).collect();
@@ -189,13 +217,17 @@ fn trak(t: &Track, offsets: &[u64], movie_duration_ms: u64) -> Vec<u8> {
     let mdia = bx(b"mdia", &[full(b"mdhd", 0, 0, &mdhd), full(b"hdlr", 0, 0, &hdlr), minf].concat());
     let mut parts = vec![full(b"tkhd", 0, 3, &tkhd)];
     // Аудио началось позже видео: пустая правка на время задержки (синхронизация, §8.1).
-    if t.start_ms > 0 {
-        let mut elst = u32b(2).to_vec();
-        elst.extend_from_slice(&u32b(t.start_ms as u32));
-        elst.extend_from_slice(&(-1i32).to_be_bytes());
-        elst.extend_from_slice(&u32b(0x0001_0000));
+    // Видео с B-кадрами: показ начинается со сдвига `shift` на шкале декодирования.
+    if t.start_ms > 0 || t.shift > 0 {
+        let empty = t.start_ms > 0;
+        let mut elst = u32b(if empty { 2 } else { 1 }).to_vec();
+        if empty {
+            elst.extend_from_slice(&u32b(t.start_ms as u32));
+            elst.extend_from_slice(&(-1i32).to_be_bytes());
+            elst.extend_from_slice(&u32b(0x0001_0000));
+        }
         elst.extend_from_slice(&u32b(track_dur_ms.min(movie_duration_ms) as u32));
-        elst.extend_from_slice(&0i32.to_be_bytes());
+        elst.extend_from_slice(&(t.shift as i32).to_be_bytes());
         elst.extend_from_slice(&u32b(0x0001_0000));
         parts.push(bx(b"edts", &full(b"elst", 0, 0, &elst)));
     }
@@ -225,27 +257,60 @@ fn build_moov(tracks: &[Track], offsets: &[Vec<u64>]) -> Vec<u8> {
     bx(b"moov", &moov)
 }
 
-/// Длительности видеокадров в 1/90000 с. Метки MKV округлены до миллисекунд (при 60 fps кадры
-/// идут через 16/17 мс), поэтому при ровном темпе берётся точная длительность кадра по частоте,
-/// иначе (пропуски, переменная частота) — разница соседних меток.
-fn video_durations(frames: &[Frame]) -> Vec<u32> {
-    let deltas: Vec<i64> = frames.windows(2).map(|w| (w[1].ms - w[0].ms).max(1)).collect();
-    if let (Some(first), Some(last)) = (frames.first(), frames.last())
-        && frames.len() > 2
-    {
-        let fps = (frames.len() - 1) as f64 * 1000.0 / (last.ms - first.ms).max(1) as f64;
-        const STANDARD: [f64; 9] = [24.0, 25.0, 30.0, 48.0, 50.0, 60.0, 120.0, 30000.0 / 1001.0, 60000.0 / 1001.0];
-        if let Some(nominal) = STANDARD.into_iter().find(|f| (f - fps).abs() / f < 0.01) {
-            let frame_ms = 1000.0 / nominal;
-            if deltas.iter().all(|d| (*d as f64 - frame_ms).abs() <= 1.5) {
-                let dur = (f64::from(VIDEO_TIMESCALE) / nominal).round() as u32;
-                return vec![dur; frames.len()];
-            }
-        }
+/// Точная длительность кадра в 1/90000 с, если метки (по возрастанию, в мс) идут ровным темпом
+/// стандартной частоты: метки MKV округлены до миллисекунд (при 60 fps — через 16/17 мс).
+fn nominal_duration(sorted_ms: &[i64]) -> Option<u32> {
+    let (first, last) = (*sorted_ms.first()?, *sorted_ms.last()?);
+    if sorted_ms.len() <= 2 {
+        return None;
     }
-    let mut d: Vec<u32> = deltas.iter().map(|d| (*d * 90) as u32).collect();
+    let fps = (sorted_ms.len() - 1) as f64 * 1000.0 / (last - first).max(1) as f64;
+    const STANDARD: [f64; 9] = [24.0, 25.0, 30.0, 48.0, 50.0, 60.0, 120.0, 30000.0 / 1001.0, 60000.0 / 1001.0];
+    let nominal = STANDARD.into_iter().find(|f| (f - fps).abs() / f < 0.01)?;
+    let frame_ms = 1000.0 / nominal;
+    sorted_ms
+        .windows(2)
+        .all(|w| ((w[1] - w[0]).max(1) as f64 - frame_ms).abs() <= 1.5)
+        .then(|| (f64::from(VIDEO_TIMESCALE) / nominal).round() as u32)
+}
+
+/// Длительности видеокадров в 1/90000 с: при ровном темпе — точная длительность кадра по
+/// частоте, иначе (пропуски, переменная частота) — разница соседних меток.
+fn video_durations(frames: &[Frame]) -> Vec<u32> {
+    let ms: Vec<i64> = frames.iter().map(|f| f.ms).collect();
+    if let Some(dur) = nominal_duration(&ms) {
+        return vec![dur; frames.len()];
+    }
+    let mut d: Vec<u32> = ms.windows(2).map(|w| ((w[1] - w[0]).max(1) * 90) as u32).collect();
     d.push(d.last().copied().unwrap_or(1500));
     d
+}
+
+/// Время видеокадров: длительности по порядку декодирования, `ctts` и сдвиг для `elst`.
+/// Без перестановки кадров — как раньше, без `ctts`.
+fn video_timing(frames: &[Frame]) -> (Vec<u32>, Option<Vec<u32>>, u32) {
+    if frames.windows(2).all(|w| w[1].ms >= w[0].ms) {
+        return (video_durations(frames), None, 0);
+    }
+    let mut sorted: Vec<i64> = frames.iter().map(|f| f.ms).collect();
+    sorted.sort_unstable();
+    let first = sorted[0];
+    // Время показа (1/90000 с от первого кадра): на сетке частоты, если темп ровный.
+    let pres: Vec<i64> = match nominal_duration(&sorted) {
+        Some(dur) => {
+            let dur = i64::from(dur);
+            frames.iter().map(|f| (((f.ms - first) * 90) as f64 / dur as f64).round() as i64 * dur).collect()
+        }
+        None => frames.iter().map(|f| (f.ms - first) * 90).collect(),
+    };
+    let mut dts = pres.clone();
+    dts.sort_unstable();
+    // Сдвиг: декодирование не позже показа ни для одного кадра.
+    let shift = pres.iter().zip(&dts).map(|(p, d)| d - p).max().unwrap_or(0).max(0);
+    let mut durations: Vec<u32> = dts.windows(2).map(|w| (w[1] - w[0]).max(1) as u32).collect();
+    durations.push(durations.last().copied().unwrap_or(1500));
+    let offsets = pres.iter().zip(&dts).map(|(p, d)| (p - d + shift) as u32).collect();
+    (durations, Some(offsets), shift as u32)
 }
 
 /// Ремукс MKV → MP4. `progress(0..1)` вызывается по ходу копирования данных.
@@ -260,8 +325,11 @@ pub fn remux(src: &Path, dst: &Path, mut progress: impl FnMut(f32)) -> io::Resul
         }
         let is_video = info.kind == 1;
         let timescale = if is_video { VIDEO_TIMESCALE } else { (info.sample_rate as u32).max(1) };
-        let durations: Vec<u32> = if is_video { video_durations(&frames) } else { vec![AAC_FRAME; frames.len()] };
-        tracks.push(Track { id: tracks.len() as u32 + 1, info, start_ms: frames[0].ms, frames, timescale, durations });
+        let (durations, ctts, shift) =
+            if is_video { video_timing(&frames) } else { (vec![AAC_FRAME; frames.len()], None, 0) };
+        // Начало дорожки — самое раннее время показа (с B-кадрами это не первый кадр в файле).
+        let start_ms = frames.iter().map(|f| f.ms).min().unwrap_or(0);
+        tracks.push(Track { id: tracks.len() as u32 + 1, info, start_ms, frames, timescale, durations, ctts, shift });
     }
     if !tracks.iter().any(|t| t.is_video()) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "в MKV нет видеодорожки H.264"));
@@ -375,6 +443,31 @@ mod tests {
         let mdat_at = data.windows(4).position(|w| w == b"mdat").expect("mdat");
         assert!(moov_at < mdat_at, "faststart: moov перед mdat");
         assert!(data.windows(4).any(|w| w == b"elst"), "аудио начинается на 20 мс позже видео");
+        assert!(!data.windows(4).any(|w| w == b"ctts"), "без B-кадров ctts не нужен");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// B-кадры (I P B B P B B …, 60 fps, метки в мс): DTS — та же сетка со сдвигом в кадр,
+    /// длительности ровные, `ctts` неотрицательные, сдвиг — в `elst`.
+    #[test]
+    fn b_frames_get_ctts_and_edit_list() {
+        // Порядок показа 0,1,2,3… → порядок декодирования: 0,3,1,2,6,4,5,…
+        let mut order = vec![0i64];
+        for g in 0..10 {
+            order.extend([3 * g + 3, 3 * g + 1, 3 * g + 2]);
+        }
+        let frames: Vec<Frame> = order
+            .iter()
+            .map(|&k| Frame { track: 1, ms: k * 1000 / 60, keyframe: k == 0, offset: 0, size: 1 })
+            .collect();
+        let (durations, ctts, shift) = video_timing(&frames);
+        assert!(durations.iter().all(|d| *d == 1500), "{durations:?}");
+        assert_eq!(shift, 1500, "сдвиг в один кадр");
+        let ctts = ctts.expect("ctts");
+        // Время показа = DTS + ctts − shift, DTS кадра i = i·1500.
+        for (i, (&k, &c)) in order.iter().zip(&ctts).enumerate() {
+            assert_eq!(i64::from(c) + i as i64 * 1500 - i64::from(shift), k * 1500, "кадр {i}");
+        }
+        assert_eq!(ctts[1], 3 * 1500 - 1500 + 1500, "P-кадр показывается на 2 кадра позже декодирования + сдвиг");
     }
 }

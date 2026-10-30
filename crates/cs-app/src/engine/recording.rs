@@ -396,7 +396,10 @@ fn mux_loop(
     let mut pending: Vec<MuxMsg> = Vec::new();
     let mut first_video_ms: Option<i64> = None;
     let mut last_ms = 0i64;
+    // Время показа — в блоки MKV; порядок пакетов между потоками — по времени декодирования
+    // (с B-кадрами оно растёт монотонно, а время показа — нет).
     let ms = |p: &Packet| p.pts / 10_000;
+    let dts_ms = |p: &Packet| p.dts / 10_000;
     let write =
         |w: &mut MkvWriter, stream: usize, t: i64, p: &Packet, base: i64, last: &mut i64| -> std::io::Result<()> {
             let rel = t - base;
@@ -426,16 +429,17 @@ fn mux_loop(
                 )?);
                 first_video_ms = Some(ms(&p));
                 for (s, q) in pending.drain(..) {
-                    il.push(s, ms(&q), q);
+                    il.push(s, dts_ms(&q), q);
                 }
             } else {
                 pending.push((stream, p));
                 continue;
             }
         }
-        il.push(stream, ms(&p), p);
+        il.push(stream, dts_ms(&p), p);
         let base = first_video_ms.unwrap_or(0);
-        while let Some((s, t, p)) = il.pop() {
+        while let Some((s, _, p)) = il.pop() {
+            let t = ms(&p);
             if t < base {
                 continue;
             }
@@ -446,7 +450,8 @@ fn mux_loop(
     }
     let base = first_video_ms.unwrap_or(0);
     if let Some(mut w) = writer {
-        for (s, t, p) in il.drain() {
+        for (s, _, p) in il.drain() {
+            let t = ms(&p);
             if t >= base {
                 write(&mut w, s, t, &p, base, &mut last_ms)?;
             }

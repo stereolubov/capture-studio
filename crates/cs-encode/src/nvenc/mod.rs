@@ -6,8 +6,8 @@
 //! кольца выходных буферов по порядку подачи. SPS/PPS повторяются в каждом ключевом кадре —
 //! поток Annex B, как у Media Foundation.
 //!
-//! B-кадры пока не включаются: перепаковка MKV → MP4 рассчитана на поток без перестановки
-//! кадров (`ctts` — пункт 2.11 плана), поэтому DTS = PTS.
+//! B-кадры (до 4 подряд) не используются как опорные: перестановка — «P раньше своих B», время
+//! декодирования = время подачи кадров со сдвигом в один кадр (DTS ≤ PTS, монотонно).
 
 pub mod sys;
 
@@ -38,14 +38,18 @@ pub struct NvencOptions {
     pub low_latency: bool,
     /// Анализ наперёд (лучше распределение битрейта, +задержка на `LOOKAHEAD_FRAMES`).
     pub lookahead: bool,
+    /// B-кадров подряд (0–4): лучше сжатие, +задержка на столько же кадров.
+    pub b_frames: u8,
 }
 
 impl Default for NvencOptions {
     fn default() -> Self {
-        Self { preset: 5, profile: H264Profile::High, low_latency: false, lookahead: false }
+        Self { preset: 5, profile: H264Profile::High, low_latency: false, lookahead: false, b_frames: 0 }
     }
 }
 
+/// Наибольшее число B-кадров подряд.
+pub const MAX_B_FRAMES: u8 = 4;
 /// Глубина анализа наперёд, кадров.
 pub const LOOKAHEAD_FRAMES: u16 = 8;
 /// Минимальная версия API (12.0): `(major << 4) | minor`.
@@ -56,7 +60,7 @@ const MAX_QUEUED: usize = 8;
 /// Сколько кадров NVENC держит у себя (вход уже отдан, пакета ещё нет): для размера пула
 /// текстур конвертера.
 pub fn pipeline_depth(opts: &NvencOptions) -> usize {
-    usize::from(if opts.lookahead { LOOKAHEAD_FRAMES } else { 0 }) + 2
+    usize::from(if opts.lookahead { LOOKAHEAD_FRAMES } else { 0 }) + usize::from(opts.b_frames.min(MAX_B_FRAMES)) + 2
 }
 
 type MaxVersionFn = unsafe extern "C" fn(*mut u32) -> NVENCSTATUS;
@@ -175,6 +179,10 @@ pub struct NvencEncoder {
     /// Отставание пакетов при анализе наперёд: «кадр принят» не значит, что готовы пакеты всех
     /// поданных кадров — последние `lookahead` ещё в анализе (как в NvEncoder из SDK).
     lookahead: usize,
+    /// Времена поданных кадров по порядку подачи: из них — время декодирования пакетов.
+    input_pts: VecDeque<i64>,
+    /// Сдвиг времени декодирования (кадр при B-кадрах, иначе 0).
+    dts_shift: i64,
     width: u32,
     height: u32,
     pub name: String,
@@ -217,6 +225,8 @@ impl NvencEncoder {
             next_slot: 0,
             frame_idx: 0,
             lookahead: if opts.lookahead { usize::from(LOOKAHEAD_FRAMES) } else { 0 },
+            input_pts: VecDeque::new(),
+            dts_shift: 0,
             width: s.width,
             height: s.height,
             name: String::new(),
@@ -271,7 +281,8 @@ impl NvencEncoder {
                 H264Profile::High => NV_ENC_H264_PROFILE_HIGH_GUID,
             };
             cfg.gopLength = s.gop();
-            cfg.frameIntervalP = 1; // без B-кадров (см. описание модуля)
+            let b_frames = opts.b_frames.min(MAX_B_FRAMES);
+            cfg.frameIntervalP = i32::from(b_frames) + 1;
             let rc = &mut cfg.rcParams;
             let kbps = s.bitrate_kbps.max(100) * 1000;
             match s.rate_control {
@@ -301,6 +312,9 @@ impl NvencEncoder {
             let h264 = &mut cfg.encodeCodecConfig.h264Config;
             h264.idrPeriod = s.gop();
             h264.set_repeatSPSPPS(1);
+            // B-кадры не опорные: перестановка не глубже одной серии, DTS — со сдвигом в кадр.
+            h264.useBFramesAsRef = _NV_ENC_BFRAME_REF_MODE_NV_ENC_BFRAME_REF_MODE_DISABLED;
+            enc.dts_shift = if b_frames > 0 { s.frame_duration() } else { 0 };
 
             let mut init: NV_ENC_INITIALIZE_PARAMS = std::mem::zeroed();
             init.version = NV_ENC_INITIALIZE_PARAMS_VER;
@@ -415,6 +429,7 @@ impl NvencEncoder {
                     pic.frameIdx = self.frame_idx;
                     self.frame_idx = self.frame_idx.wrapping_add(1);
                     self.in_flight.push_back(InFlight { slot, mapped: map.mappedResource, _texture: tex });
+                    self.input_pts.push_back(pts);
                 }
                 None => pic.encodePicFlags = _NV_ENC_PIC_FLAGS_NV_ENC_PIC_FLAG_EOS as u32,
             }
@@ -450,7 +465,9 @@ impl NvencEncoder {
                     || lock.pictureType == _NV_ENC_PIC_TYPE_NV_ENC_PIC_TYPE_I;
                 let _ = nv!(self.api, nvEncUnlockBitstream(self.encoder, lock.outputBitstream));
                 let _ = nv!(self.api, nvEncUnmapInputResource(self.encoder, f.mapped));
-                out.push(Packet { data, pts, dts: pts, keyframe });
+                // Пакеты идут в порядке декодирования: k-му пакету — время k-го поданного кадра.
+                let dts = self.input_pts.pop_front().map_or(pts, |t| t - self.dts_shift);
+                out.push(Packet { data, pts, dts, keyframe });
             }
         }
         Ok(())

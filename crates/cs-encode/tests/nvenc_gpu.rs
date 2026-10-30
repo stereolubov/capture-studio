@@ -46,16 +46,25 @@ fn run(opts: NvencOptions) -> Vec<cs_encode::Packet> {
 #[test]
 #[ignore = "нужен GPU NVIDIA"]
 fn nvenc_encodes_frames() {
-    for opts in
-        [NvencOptions::default(), NvencOptions { lookahead: true, low_latency: true, preset: 1, ..Default::default() }]
-    {
+    for opts in [
+        NvencOptions::default(),
+        NvencOptions { lookahead: true, low_latency: true, preset: 1, ..Default::default() },
+        NvencOptions { b_frames: 2, ..Default::default() },
+        NvencOptions { b_frames: 3, lookahead: true, preset: 7, ..Default::default() },
+    ] {
         let out = run(opts);
         assert_eq!(out.len(), 120, "{opts:?}: по пакету на кадр");
         assert!(out[0].keyframe, "первый пакет — ключевой");
         assert!(avc::find_parameter_sets(&out[0].data).is_some(), "SPS/PPS в первом ключевом кадре");
         let keys = out.iter().filter(|p| p.keyframe).count();
         assert_eq!(keys, 2, "GOP 1 с при 60 к/с → 2 ключевых за 120 кадров");
-        assert!(out.windows(2).all(|w| w[1].pts > w[0].pts && w[1].dts == w[1].pts), "PTS монотонны, DTS = PTS");
+        assert!(out.windows(2).all(|w| w[1].dts > w[0].dts), "{opts:?}: DTS монотонны");
+        assert!(out.iter().all(|p| p.dts <= p.pts), "{opts:?}: декодирование не позже показа");
+        let mut pts: Vec<i64> = out.iter().map(|p| p.pts).collect();
+        pts.sort_unstable();
+        assert!(pts.windows(2).all(|w| w[1] > w[0]), "{opts:?}: все времена показа разные");
+        let reordered = out.windows(2).any(|w| w[1].pts < w[0].pts);
+        assert_eq!(reordered, opts.b_frames > 0, "{opts:?}: перестановка кадров только с B-кадрами");
         let stream: Vec<u8> = out.iter().flat_map(|p| p.data.iter().copied()).collect();
         std::fs::write(std::env::temp_dir().join("cs-nvenc-test.h264"), stream).expect("файл");
     }
