@@ -278,6 +278,19 @@ impl Form {
         self.y += self.lh12m + 6.0;
     }
 
+    /// Пояснение мелким шрифтом под полем (на всю ширину значения).
+    fn note(&mut self, text: &str, color: egui::Color32) {
+        w::text(
+            &self.painter,
+            pos2(self.x + LABEL_W + 12.0, self.y),
+            Align2::LEFT_TOP,
+            text,
+            theme::sans(theme::TEXT_SMALL),
+            color,
+        );
+        self.y += self.lh12m + ROW_GAP;
+    }
+
     /// Подпись и рамка поля; возвращает прямоугольник рамки.
     fn row(&mut self, label: &str) -> Rect {
         let h = self.box_h();
@@ -578,6 +591,35 @@ fn stream_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
     f.toggle(ui, "dynbr", &t("field-dynamic-bitrate"), &mut d.profile.stream.dynamic_bitrate, &yes, &no);
 }
 
+/// Программный H.264: модуль Cisco скачивает сам пользователь (§9.1, ADR-0014).
+fn openh264_rows(app: &App, ui: &mut Ui, f: &mut Form) {
+    use cs_encode::openh264::{self, Download};
+    let t = |k: &str| app.i18n.t(k);
+    let state = openh264::download_state();
+    let installed = openh264::installed();
+    let value = match &state {
+        Download::Running(p) => format!("{} {:.0}%", t("openh264-downloading"), p * 100.0),
+        _ if installed => format!("{} · Cisco", openh264::VERSION),
+        Download::Failed(_) => t("openh264-failed"),
+        Download::Idle => t("openh264-missing"),
+    };
+    let items = if installed || matches!(state, Download::Running(_)) { vec![] } else { vec![t("openh264-download")] };
+    if f.menu(ui, "openh264", "OpenH264", &value, &items) == Some(0) {
+        openh264::start_download();
+    }
+    if matches!(state, Download::Running(_)) {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+    }
+    if let Download::Failed(e) = &state {
+        let warn = f.p.warn;
+        f.note(e, warn);
+    }
+    let warn = f.p.warn;
+    f.note(&t("openh264-cpu-warning"), warn);
+    let mute = f.p.mute;
+    f.note(openh264::NOTICE, mute);
+}
+
 fn output_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form, live: bool) {
     let t = |k: &str| app.i18n.t(k);
     let encoders = [
@@ -596,6 +638,9 @@ fn output_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form, live
     let mut sel = index_of(&encoders, shown);
     if f.dropdown(ui, "encoder", &t("field-encoder"), &enc_names, &mut sel, !live) {
         d.profile.output.encoder = encoders[sel];
+    }
+    if d.profile.output.encoder == EncoderKind::Software {
+        openh264_rows(app, ui, f);
     }
     let rcs = [RateControl::Cbr, RateControl::Vbr, RateControl::Cqp];
     let mut sel = index_of(&rcs, d.profile.output.rate_control);

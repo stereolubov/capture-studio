@@ -28,6 +28,8 @@
 | `audioadapter-buffers` 5 | cs-audio | Обёртка interleaved-буферов для `rubato` 5 без копирования | MIT/Apache-2.0 | — (интерфейс `rubato`) |
 | (без крейта) привязки NVENC `cs-encode/src/nvenc/sys.rs` | cs-encode | Сгенерированы `bindgen` из `nvEncodeAPI.h` NVIDIA (nv-codec-headers n12.0.16.1), см. ADR-0011 | MIT (NVIDIA) | `nvidia-video-codec-sdk` (статическая компоновка, CUDA) |
 | (без крейта) объявления AMF `cs-encode/src/amf.rs` | cs-encode | Таблицы методов пяти интерфейсов переписаны с C-раздела заголовков AMF SDK 1.4.36, места проверяются тестом, см. ADR-0013 | MIT (AMD) | `bindgen` (C++-заголовки) |
+| `openh264-sys2` 0.9 (без default-фич, фича `libloading`) | cs-encode | Программный H.264: привязки и загрузка двоичного модуля Cisco со сверкой SHA-256 (ADR-0014); тянет `libloading` (ISC) и `sha2` (MIT/Apache-2.0) | BSD-2-Clause | свои привязки (bindgen + хеш вручную); сборка из исходников (фича `source`) — без патентного покрытия Cisco |
+| `bzip2` 0.6 (бэкенд `libbz2-rs-sys`, чистый Rust) | cs-encode | Распаковка `openh264-*.dll.bz2` с сервера Cisco (ADR-0014) | MIT/Apache-2.0; `libbz2-rs-sys` — bzip2-1.0.6 | свой распаковщик bzip2; Cisco отдаёт модуль только в `.bz2` |
 | (без крейта) привязки oneVPL `cs-encode/src/qsv/sys.rs` | cs-encode | Сгенерированы `bindgen` из заголовков oneVPL 2.15.0 (intel/libvpl), диспетчер `libvpl.dll` ставит драйвер Intel, см. ADR-0013 | MIT (Intel) | статическая сборка диспетчера (C++) |
 | `windows-core` 0.62 | cs-audio | Макрос `#[implement]` для COM-обработчика `ActivateAudioInterfaceAsync` (звук приложения, §8.1) — та же версия, что у `windows` | MIT/Apache-2.0 | ручная vtable (небезопасно и громоздко) |
 

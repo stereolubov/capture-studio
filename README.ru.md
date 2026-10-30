@@ -67,9 +67,18 @@ Capture Studio построен на открытых проектах. Боль
   объявления интерфейсов энкодера AMF (MIT);
 - заголовки [Intel® Video Processing Library (oneVPL)](https://github.com/intel/libvpl), Intel —
   привязки к энкодеру Quick Sync Video (MIT);
+- [OpenH264](https://www.openh264.org/), Cisco — программный энкодер H.264. OpenH264 Video Codec
+  provided by Cisco Systems, Inc. Двоичный модуль скачивается с сервера Cisco по вашему запросу и не
+  входит в Capture Studio; привязки — [openh264-rs](https://crates.io/crates/openh264-sys2),
+  Ralf Biedert (BSD-2-Clause), загрузка — [libloading](https://github.com/nagisa/rust_libloading),
+  Simonas Kazlauskas (ISC);
+- [bzip2-rs](https://github.com/trifectatechfoundation/bzip2-rs) и
+  [libbzip2-rs](https://github.com/trifectatechfoundation/libbzip2-rs), Trifecta Tech Foundation, на
+  основе bzip2 Julian Seward — распаковка загруженного OpenH264 (MIT / Apache-2.0, bzip2-1.0.6);
 - [image](https://github.com/image-rs/image), [fluent-rs](https://github.com/projectfluent/fluent-rs),
   [serde](https://github.com/serde-rs/serde), [toml](https://github.com/toml-rs/toml),
-  [tracing](https://github.com/tokio-rs/tracing) и другие крейты (MIT / Apache-2.0);
+  [tracing](https://github.com/tokio-rs/tracing), [RustCrypto sha2](https://github.com/RustCrypto/hashes)
+  и другие крейты (MIT / Apache-2.0);
 - шрифты [IBM Plex Sans](https://github.com/IBM/plex) и [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)
   (SIL Open Font License 1.1).
 

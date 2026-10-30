@@ -434,6 +434,8 @@ pub enum Screen {
     SettingsAudio,
     /// Настройки, вкладка «Вывод» с раскрытыми «Расширенными».
     SettingsAdvanced,
+    /// Настройки, вкладка «Вывод» с программным энкодером (строка OpenH264).
+    SettingsSoftware,
 }
 
 impl Screen {
@@ -448,6 +450,7 @@ impl Screen {
             "filters" => Self::Filters,
             "settings-audio" => Self::SettingsAudio,
             "settings-advanced" => Self::SettingsAdvanced,
+            "settings-software" => Self::SettingsSoftware,
             _ => return None,
         })
     }
@@ -459,7 +462,9 @@ impl App {
         match screen {
             // Рамка 1 px снаружи сетки 1280×760, как в дизайн-макете.
             Screen::Main => Vec2::new(1282.0, 762.0),
-            Screen::Settings | Screen::SettingsAudio | Screen::SettingsAdvanced => settings::panel_size(self, ctx),
+            Screen::Settings | Screen::SettingsAudio | Screen::SettingsAdvanced | Screen::SettingsSoftware => {
+                settings::panel_size(self, ctx)
+            }
             Screen::Mixer => mixer::panel_size(self, ctx),
             Screen::Stats => stats::panel_size(self, ctx),
             Screen::Mini => mini::SIZE,
@@ -477,14 +482,15 @@ impl App {
                 let mut d = settings::SettingsDialog::new(self, SettingsTab::Output);
                 settings::draw_panel(self, ui, &mut d, rect);
             }
-            Screen::SettingsAudio | Screen::SettingsAdvanced => {
+            Screen::SettingsAudio | Screen::SettingsAdvanced | Screen::SettingsSoftware => {
                 // Диалог живёт между проходами: по нему меряется высота панели.
-                let mut d = self.overlays.settings.take().unwrap_or_else(|| {
-                    if screen == Screen::SettingsAudio {
-                        settings::SettingsDialog::new(self, SettingsTab::Audio)
-                    } else {
-                        settings::SettingsDialog::new(self, SettingsTab::Output).show_advanced()
+                let mut d = self.overlays.settings.take().unwrap_or_else(|| match screen {
+                    Screen::SettingsAudio => settings::SettingsDialog::new(self, SettingsTab::Audio),
+                    Screen::SettingsSoftware => {
+                        self.profile.output.encoder = cs_core::config::profile::EncoderKind::Software;
+                        settings::SettingsDialog::new(self, SettingsTab::Output)
                     }
+                    _ => settings::SettingsDialog::new(self, SettingsTab::Output).show_advanced(),
                 });
                 settings::draw_panel(self, ui, &mut d, rect);
                 self.overlays.settings = Some(d);

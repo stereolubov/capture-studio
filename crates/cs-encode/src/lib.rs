@@ -2,8 +2,8 @@
 //!
 //! Аппаратный H.264: прямой NVENC (`nvenc`, GPU NVIDIA), AMF (`amf`, GPU AMD), Quick Sync через
 //! oneVPL (`qsv`, GPU Intel) и MFT Media Foundation (`mf_h264`, любой GPU); вход — NV12-текстура
-//! D3D11. AAC-LC через MF (`mf_aac`). Программный OpenH264 — дальше по плану M2. Время — в
-//! единицах 100 нс от начала записи.
+//! D3D11; программный OpenH264 от Cisco (`openh264`) — последний резерв. AAC-LC через MF
+//! (`mf_aac`). Время — в единицах 100 нс от начала записи.
 
 #[cfg(windows)]
 pub mod amf;
@@ -17,18 +17,22 @@ mod mfutil;
 #[cfg(windows)]
 pub mod nvenc;
 #[cfg(windows)]
+pub mod openh264;
+#[cfg(windows)]
 pub mod qsv;
 
 /// Какой видеоэнкодер открывать (§9.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncoderChoice {
-    /// Первый доступный: NVENC → AMF → QSV → Media Foundation.
+    /// Первый доступный: NVENC → AMF → QSV → Media Foundation → OpenH264.
     Auto,
-    /// Выбранный энкодер; недоступен — Media Foundation (с записью в лог).
+    /// Выбранный энкодер; недоступен — Media Foundation, затем OpenH264 (с записью в лог).
     Nvenc,
     Amf,
     Qsv,
     MediaFoundation,
+    /// Программный OpenH264 (CPU).
+    Software,
 }
 
 /// Профиль H.264.
@@ -66,7 +70,7 @@ pub const MAX_B_FRAMES: u8 = 4;
 /// текстур конвертера. QSV копирует кадр в свой пул и пул конвертера не держит.
 pub fn pipeline_depth(choice: EncoderChoice, opts: &EncoderOptions) -> usize {
     match choice {
-        EncoderChoice::MediaFoundation | EncoderChoice::Qsv => 0,
+        EncoderChoice::MediaFoundation | EncoderChoice::Qsv | EncoderChoice::Software => 0,
         #[cfg(windows)]
         EncoderChoice::Amf => amf::pipeline_depth(opts),
         #[cfg(windows)]
@@ -83,36 +87,59 @@ pub enum VideoEncoder {
     Nvenc(Box<nvenc::NvencEncoder>),
     Amf(Box<amf::AmfEncoder>),
     Qsv(Box<qsv::QsvEncoder>),
+    Software(Box<openh264::OpenH264Encoder>),
 }
 
 #[cfg(windows)]
 impl VideoEncoder {
-    /// Открывает энкодер по выбору; недоступный заменяется следующим по цепочке, последний —
-    /// Media Foundation.
+    /// Открывает энкодер по выбору; недоступный заменяется следующим по цепочке
+    /// (выбранный → Media Foundation → OpenH264).
     pub fn open(
         device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
         s: &VideoSettings,
         choice: EncoderChoice,
         opts: &EncoderOptions,
     ) -> Result<Self, EncodeError> {
-        let chain: &[EncoderChoice] = match choice {
-            EncoderChoice::Auto => &[EncoderChoice::Nvenc, EncoderChoice::Amf, EncoderChoice::Qsv],
-            EncoderChoice::MediaFoundation => &[],
-            ref one => std::slice::from_ref(one),
+        use EncoderChoice as C;
+        let chain: Vec<C> = match choice {
+            C::Auto => vec![C::Nvenc, C::Amf, C::Qsv, C::MediaFoundation, C::Software],
+            one => [one, C::MediaFoundation, C::Software].into_iter().fold(Vec::new(), |mut v, c| {
+                if !v.contains(&c) {
+                    v.push(c);
+                }
+                v
+            }),
         };
+        let mut last = EncodeError::Unavailable("нет энкодеров".into());
         for c in chain {
-            let r = match c {
-                EncoderChoice::Nvenc => nvenc::NvencEncoder::new(device, s, opts).map(|e| Self::Nvenc(Box::new(e))),
-                EncoderChoice::Amf => amf::AmfEncoder::new(device, s, opts).map(|e| Self::Amf(Box::new(e))),
-                EncoderChoice::Qsv => qsv::QsvEncoder::new(device, s, opts).map(|e| Self::Qsv(Box::new(e))),
-                _ => continue,
-            };
-            match r {
+            match Self::open_one(device, s, c, opts) {
                 Ok(e) => return Ok(e),
-                Err(e) => tracing::info!("{c:?} недоступен ({e})"),
+                Err(e) => {
+                    tracing::info!("{c:?} недоступен ({e})");
+                    last = e;
+                }
             }
         }
-        Ok(Self::Mf(mf_h264::MfH264Encoder::new(device, s)?))
+        Err(last)
+    }
+
+    /// Открывает ровно этот энкодер, без замены.
+    pub fn open_one(
+        device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
+        s: &VideoSettings,
+        choice: EncoderChoice,
+        opts: &EncoderOptions,
+    ) -> Result<Self, EncodeError> {
+        match choice {
+            EncoderChoice::Nvenc => nvenc::NvencEncoder::new(device, s, opts).map(|e| Self::Nvenc(Box::new(e))),
+            EncoderChoice::Amf => amf::AmfEncoder::new(device, s, opts).map(|e| Self::Amf(Box::new(e))),
+            EncoderChoice::Qsv => qsv::QsvEncoder::new(device, s, opts).map(|e| Self::Qsv(Box::new(e))),
+            EncoderChoice::MediaFoundation => mf_h264::MfH264Encoder::new(device, s).map(Self::Mf),
+            EncoderChoice::Software => {
+                openh264::OpenH264Encoder::new(device, s, opts).map(|e| Self::Software(Box::new(e)))
+            }
+            EncoderChoice::Auto => Self::open(device, s, choice, opts),
+        }
     }
 
     pub fn name(&self) -> &str {
@@ -121,6 +148,7 @@ impl VideoEncoder {
             Self::Nvenc(e) => &e.name,
             Self::Amf(e) => &e.name,
             Self::Qsv(e) => &e.name,
+            Self::Software(e) => &e.name,
         }
     }
 
@@ -130,6 +158,7 @@ impl VideoEncoder {
             Self::Nvenc(e) => e.push(texture, pts),
             Self::Amf(e) => e.push(texture, pts),
             Self::Qsv(e) => e.push(texture, pts),
+            Self::Software(e) => e.push(texture, pts),
         }
     }
 
@@ -139,6 +168,7 @@ impl VideoEncoder {
             Self::Nvenc(e) => e.pump(out),
             Self::Amf(e) => e.pump(out),
             Self::Qsv(e) => e.pump(out),
+            Self::Software(e) => e.pump(out),
         }
     }
 
@@ -148,6 +178,7 @@ impl VideoEncoder {
             Self::Nvenc(e) => e.drain(out),
             Self::Amf(e) => e.drain(out),
             Self::Qsv(e) => e.drain(out),
+            Self::Software(e) => e.drain(out),
         }
     }
 }

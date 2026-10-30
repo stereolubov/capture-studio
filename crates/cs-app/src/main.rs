@@ -68,6 +68,7 @@ fn run(args: args::Args) -> anyhow::Result<()> {
         None => DataDirs::detect()?,
     };
     dirs.ensure().context("создание папки данных")?;
+    cs_encode::openh264::set_dir(dirs.codecs_dir());
     let settings: Settings = config::load(&dirs.settings_file()).unwrap_or_else(|e| {
         eprintln!("settings.toml: {e}");
         Settings::default()

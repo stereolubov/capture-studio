@@ -484,8 +484,8 @@ impl Worker {
                 EncoderKind::Nvenc => cs_encode::EncoderChoice::Nvenc,
                 EncoderKind::Amf => cs_encode::EncoderChoice::Amf,
                 EncoderKind::Qsv => cs_encode::EncoderChoice::Qsv,
-                // Программный OpenH264 — дальше по плану M2; пока аппаратный MFT.
-                EncoderKind::MediaFoundation | EncoderKind::Software => cs_encode::EncoderChoice::MediaFoundation,
+                EncoderKind::MediaFoundation => cs_encode::EncoderChoice::MediaFoundation,
+                EncoderKind::Software => cs_encode::EncoderChoice::Software,
             },
             // Запись — тюнинг «качество».
             nvenc: EncoderOptions {

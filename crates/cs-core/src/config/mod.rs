@@ -81,6 +81,11 @@ impl DataDirs {
         self.root.join("logs")
     }
 
+    /// Скачанные пользователем кодеки (OpenH264 от Cisco, §9.1).
+    pub fn codecs_dir(&self) -> PathBuf {
+        self.root.join("codecs")
+    }
+
     pub fn crashes_dir(&self) -> PathBuf {
         self.root.join("crashes")
     }
