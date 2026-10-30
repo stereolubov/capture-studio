@@ -10,8 +10,8 @@ use cs_audio::engine::TimedBlock;
 use cs_audio::mixer::{SAMPLE_RATE, TRACKS};
 use cs_core::Event;
 use cs_core::clock::Ticks;
+use cs_encode::VideoEncoder;
 use cs_encode::mf_aac::MfAacEncoder;
-use cs_encode::mf_h264::MfH264Encoder;
 use cs_encode::{Packet, VideoSettings, avc};
 use cs_gpu::{ColorConverter, ColorParams, GpuDevice};
 use cs_output::interleave::Interleaver;
@@ -32,6 +32,8 @@ pub struct RecordingConfig {
     pub color: ColorParams,
     /// Фильтр масштабирования холста до выходного разрешения (§7.3).
     pub scale: cs_gpu::ScaleKernel,
+    pub encoder: cs_encode::EncoderChoice,
+    pub nvenc: cs_encode::nvenc::NvencOptions,
     pub audio_kbps: u32,
     /// Маска дорожек аудио (бит 0 — дорожка 1).
     pub tracks: u8,
@@ -121,7 +123,14 @@ impl Recording {
         }
         let converter = {
             let _g = gpu.lock();
-            let options = cs_gpu::ConvertOptions { scale: cfg.scale, ten_bit: false };
+            // Пул текстур — с запасом на кадры внутри энкодера (NVENC с анализом наперёд держит больше).
+            let pool = cs_gpu::CONVERT_POOL
+                + if cfg.encoder == cs_encode::EncoderChoice::MediaFoundation {
+                    0
+                } else {
+                    cs_encode::nvenc::pipeline_depth(&cfg.nvenc)
+                };
+            let options = cs_gpu::ConvertOptions { scale: cfg.scale, pool, ..Default::default() };
             ColorConverter::new(gpu, cfg.video.width, cfg.video.height, cfg.color, options)?
         };
         let start_ticks = Ticks::now();
@@ -137,13 +146,14 @@ impl Recording {
         // Видеоэнкодер: MF-объекты создаются и живут в этом потоке.
         let device = gpu.device.clone();
         let vs = cfg.video;
+        let (choice, nv) = (cfg.encoder, cfg.nvenc);
         let (ready_tx, ready_rx) = bounded::<Result<String, String>>(1);
         let vtx = mux_tx.clone();
         let vstop = stop.clone();
         threads.push(std::thread::Builder::new().name("encoder-video".into()).spawn(move || {
-            let mut enc = match MfH264Encoder::new(&device, &vs) {
+            let mut enc = match VideoEncoder::open(&device, &vs, choice, &nv) {
                 Ok(e) => {
-                    let _ = ready_tx.send(Ok(e.name.clone()));
+                    let _ = ready_tx.send(Ok(e.name().to_owned()));
                     e
                 }
                 Err(e) => {

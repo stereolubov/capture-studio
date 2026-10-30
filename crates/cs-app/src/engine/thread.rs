@@ -439,7 +439,10 @@ impl Worker {
         if self.recording.is_some() || self.recording_starting.is_some() {
             return;
         }
-        use cs_core::config::profile::{ColorRange, ColorSpace, RateControl as Rc, RecordFormat, ScaleFilter};
+        use cs_core::config::profile::{
+            ColorRange, ColorSpace, EncoderKind, RateControl as Rc, RecordFormat, ScaleFilter,
+        };
+        use cs_encode::nvenc::{H264Profile, NvencOptions};
         if let Some(free) = free_mb(&self.recordings_dir)
             && free < STOP_FREE_MB
         {
@@ -473,6 +476,25 @@ impl Worker {
                 ScaleFilter::Bilinear => cs_gpu::ScaleKernel::Bilinear,
                 ScaleFilter::Bicubic => cs_gpu::ScaleKernel::Bicubic,
                 ScaleFilter::Lanczos => cs_gpu::ScaleKernel::Lanczos,
+            },
+            encoder: match p.output.encoder {
+                EncoderKind::Auto => cs_encode::EncoderChoice::Auto,
+                EncoderKind::Nvenc => cs_encode::EncoderChoice::Nvenc,
+                // AMF, QSV и программный — дальше по плану M2; пока аппаратный MFT.
+                EncoderKind::MediaFoundation | EncoderKind::Amf | EncoderKind::Qsv | EncoderKind::Software => {
+                    cs_encode::EncoderChoice::MediaFoundation
+                }
+            },
+            // Запись — тюнинг «качество»; B-кадры пока не включаются (MP4 без `ctts`, пункт 2.11).
+            nvenc: NvencOptions {
+                preset: p.output.preset,
+                profile: match p.output.h264_profile.as_str() {
+                    "baseline" => H264Profile::Baseline,
+                    "main" => H264Profile::Main,
+                    _ => H264Profile::High,
+                },
+                low_latency: false,
+                lookahead: p.output.lookahead,
             },
             audio_kbps: p.output.audio_bitrate_kbps,
             tracks: p.output.record_tracks,

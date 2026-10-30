@@ -1,8 +1,8 @@
 //! Кодирование (§9).
 //!
-//! M2b: аппаратный H.264 через Media Foundation (`mf_h264`, вход — NV12-текстура D3D11 без копий,
-//! работает на NVIDIA/AMD/Intel) и AAC-LC через MF (`mf_aac`). Прямые NVENC/AMF/QSV и программный
-//! OpenH264 — M2d. Время — в единицах 100 нс от начала записи.
+//! Аппаратный H.264: прямой NVENC (`nvenc`, GPU NVIDIA) и MFT Media Foundation (`mf_h264`,
+//! NVIDIA/AMD/Intel); вход — NV12-текстура D3D11 без копий. AAC-LC через MF (`mf_aac`). AMF, QSV и
+//! программный OpenH264 — дальше по плану M2. Время — в единицах 100 нс от начала записи.
 
 pub mod avc;
 #[cfg(windows)]
@@ -11,6 +11,72 @@ pub mod mf_aac;
 pub mod mf_h264;
 #[cfg(windows)]
 mod mfutil;
+#[cfg(windows)]
+pub mod nvenc;
+
+/// Какой видеоэнкодер открывать (§9.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderChoice {
+    /// NVENC, если есть GPU NVIDIA с подходящим драйвером, иначе Media Foundation.
+    Auto,
+    /// NVENC; недоступен — Media Foundation (с записью в лог).
+    Nvenc,
+    MediaFoundation,
+}
+
+/// Видеоэнкодер записи (§9.1).
+#[cfg(windows)]
+pub enum VideoEncoder {
+    Mf(mf_h264::MfH264Encoder),
+    Nvenc(Box<nvenc::NvencEncoder>),
+}
+
+#[cfg(windows)]
+impl VideoEncoder {
+    /// Открывает энкодер по выбору; недоступный NVENC заменяется Media Foundation.
+    pub fn open(
+        device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
+        s: &VideoSettings,
+        choice: EncoderChoice,
+        nv: &nvenc::NvencOptions,
+    ) -> Result<Self, EncodeError> {
+        if choice != EncoderChoice::MediaFoundation {
+            match nvenc::NvencEncoder::new(device, s, nv) {
+                Ok(e) => return Ok(Self::Nvenc(Box::new(e))),
+                Err(e) => tracing::info!("NVENC недоступен ({e}) — Media Foundation"),
+            }
+        }
+        Ok(Self::Mf(mf_h264::MfH264Encoder::new(device, s)?))
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Mf(e) => &e.name,
+            Self::Nvenc(e) => &e.name,
+        }
+    }
+
+    pub fn push(&mut self, texture: windows::Win32::Graphics::Direct3D11::ID3D11Texture2D, pts: i64) {
+        match self {
+            Self::Mf(e) => e.push(texture, pts),
+            Self::Nvenc(e) => e.push(texture, pts),
+        }
+    }
+
+    pub fn pump(&mut self, out: &mut Vec<Packet>) -> Result<bool, EncodeError> {
+        match self {
+            Self::Mf(e) => e.pump(out),
+            Self::Nvenc(e) => e.pump(out),
+        }
+    }
+
+    pub fn drain(&mut self, out: &mut Vec<Packet>) -> Result<(), EncodeError> {
+        match self {
+            Self::Mf(e) => e.drain(out),
+            Self::Nvenc(e) => e.drain(out),
+        }
+    }
+}
 
 /// Закодированный пакет. `pts`/`dts` — 100 нс от начала записи.
 #[derive(Debug, Clone, PartialEq, Eq)]

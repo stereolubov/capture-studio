@@ -84,6 +84,7 @@ Capture Studio stands on the shoulders of open-source projects. Many thanks to t
 - [nnnoiseless](https://github.com/jneem/nnnoiseless) by Joe Neeman, a Rust port of
   [RNNoise](https://github.com/xiph/rnnoise) by Jean-Marc Valin, Mozilla and the Xiph.Org Foundation —
   noise suppression (BSD-3-Clause);
+- NVIDIA Video Codec SDK header `nvEncodeAPI.h` — bindings for the NVENC encoder (MIT);
 - [image](https://github.com/image-rs/image), [fluent-rs](https://github.com/projectfluent/fluent-rs),
   [serde](https://github.com/serde-rs/serde), [toml](https://github.com/toml-rs/toml),
   [tracing](https://github.com/tokio-rs/tracing) and other crates (MIT / Apache-2.0);

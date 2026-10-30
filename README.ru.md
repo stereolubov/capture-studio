@@ -62,6 +62,7 @@ Capture Studio построен на открытых проектах. Боль
 - [nnnoiseless](https://github.com/jneem/nnnoiseless), Joe Neeman — порт на Rust
   [RNNoise](https://github.com/xiph/rnnoise) (Jean-Marc Valin, Mozilla, Xiph.Org Foundation) —
   шумоподавление (BSD-3-Clause);
+- заголовок NVIDIA Video Codec SDK `nvEncodeAPI.h` — привязки к энкодеру NVENC (MIT);
 - [image](https://github.com/image-rs/image), [fluent-rs](https://github.com/projectfluent/fluent-rs),
   [serde](https://github.com/serde-rs/serde), [toml](https://github.com/toml-rs/toml),
   [tracing](https://github.com/tokio-rs/tracing) и другие крейты (MIT / Apache-2.0);

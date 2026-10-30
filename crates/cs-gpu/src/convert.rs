@@ -17,7 +17,8 @@ const PS_Y: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/convert_y.cso"));
 const PS_UV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/convert_uv.cso"));
 const PS_SCALE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/convert_scale.cso"));
 
-/// Глубина пула: больше задержки конвейера аппаратного энкодера (без B-кадров и lookahead).
+/// Глубина пула по умолчанию: больше задержки конвейера аппаратного энкодера (очередь до
+/// энкодера + кадры у него внутри). Энкодер с lookahead держит больше — см. `ConvertOptions::pool`.
 pub const POOL: usize = 8;
 
 /// Цветовое пространство и диапазон (§7.3).
@@ -40,11 +41,19 @@ pub enum ScaleKernel {
 }
 
 /// Параметры выхода конвертера.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConvertOptions {
     pub scale: ScaleKernel,
     /// P010 (10 бит) вместо NV12 — для HEVC/AV1 10 бит.
     pub ten_bit: bool,
+    /// Текстур в кольце: больше, чем кадров одновременно у очереди и энкодера.
+    pub pool: usize,
+}
+
+impl Default for ConvertOptions {
+    fn default() -> Self {
+        Self { scale: ScaleKernel::Bilinear, ten_bit: false, pool: POOL }
+    }
 }
 
 #[repr(C)]
@@ -171,8 +180,8 @@ impl ColorConverter {
             let mut raster = None;
             d.CreateRasterizerState(&rd, Some(&mut raster))?;
 
-            let mut pool = Vec::with_capacity(POOL);
-            for _ in 0..POOL {
+            let mut pool = Vec::with_capacity(options.pool.max(2));
+            for _ in 0..options.pool.max(2) {
                 let desc = D3D11_TEXTURE2D_DESC {
                     Width: width,
                     Height: height,
@@ -323,7 +332,7 @@ impl ColorConverter {
             None => (canvas, canvas_size),
         };
         let target = &self.pool[self.next];
-        self.next = (self.next + 1) % POOL;
+        self.next = (self.next + 1) % self.pool.len();
         let (y, u, v) = coefs(self.params, self.options.ten_bit);
         let c = Coefs {
             y,
@@ -416,7 +425,7 @@ mod tests {
         let canvas = gpu.create_texture(cw, ch, DXGI_FORMAT_R8G8B8A8_UNORM, Some(&px), false).expect("canvas");
         let params = ColorParams { bt601: false, full_range: true };
         let mut conv =
-            ColorConverter::new(&gpu, ow, oh, params, ConvertOptions { scale, ten_bit: false }).expect("conv");
+            ColorConverter::new(&gpu, ow, oh, params, ConvertOptions { scale, ..Default::default() }).expect("conv");
         let tex = conv.convert(&gpu, &canvas.srv, (cw, ch));
         let mut y = gpu.read_nv12(&tex).expect("read");
         y.truncate((ow * oh) as usize);
@@ -472,7 +481,7 @@ mod tests {
         let _g = gpu.lock();
         let white = vec![255u8; 64 * 64 * 4];
         let canvas = gpu.create_texture(64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, Some(&white), false).expect("canvas");
-        let opts = ConvertOptions { scale: ScaleKernel::Lanczos, ten_bit: true };
+        let opts = ConvertOptions { scale: ScaleKernel::Lanczos, ten_bit: true, ..Default::default() };
         let mut conv =
             ColorConverter::new(&gpu, 32, 32, ColorParams { bt601: false, full_range: false }, opts).expect("conv");
         let tex = conv.convert(&gpu, &canvas.srv, (64, 64));

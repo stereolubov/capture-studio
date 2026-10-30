@@ -26,6 +26,7 @@
 | `nnnoiseless` 0.5 (без default-фич: без CLI и `dasp`) | cs-audio | Шумоподавление RNNoise (§8.3), чистый Rust, модель встроена (+1.2 МБ exe) | BSD-3-Clause | привязки к C-библиотеке RNNoise (сборка C, `rnnoise-c` устарел) |
 | `rubato` 5 (без default-фич: без FFT-ресемплеров) | cs-audio | Асинхронный sinc-ресемплер канала: частота устройства → 48 кГц и подстройка под дрейф часов (ADR-0010, §8.1) | MIT/Apache-2.0 | свой ресемплер (линейный был до ADR-0010: хуже качество) |
 | `audioadapter-buffers` 5 | cs-audio | Обёртка interleaved-буферов для `rubato` 5 без копирования | MIT/Apache-2.0 | — (интерфейс `rubato`) |
+| (без крейта) привязки NVENC `cs-encode/src/nvenc/sys.rs` | cs-encode | Сгенерированы `bindgen` из `nvEncodeAPI.h` NVIDIA (nv-codec-headers n12.0.16.1), см. ADR-0011 | MIT (NVIDIA) | `nvidia-video-codec-sdk` (статическая компоновка, CUDA) |
 | `windows-core` 0.62 | cs-audio | Макрос `#[implement]` для COM-обработчика `ActivateAudioInterfaceAsync` (звук приложения, §8.1) — та же версия, что у `windows` | MIT/Apache-2.0 | ручная vtable (небезопасно и громоздко) |
 
 **Не используется:** `tracing-appender` — нет ротации по размеру, нужной по §12.1 (ADR-0005).
