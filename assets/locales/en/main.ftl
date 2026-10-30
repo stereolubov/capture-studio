@@ -101,6 +101,7 @@ field-profile = Profile
 field-bframes = B-frames
 field-lookahead = Lookahead
 field-separate-encoder = Separate recording encoder
+field-record-tracks = Recording tracks
 field-tracks = Recording tracks
 unit-seconds = s
 unit-nits = nits

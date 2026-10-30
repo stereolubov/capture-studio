@@ -466,7 +466,9 @@ impl Worker {
             },
         };
         let cfg = RecordingConfig {
-            path: self.recordings_dir.join(recording::file_name("mkv")),
+            path: self.recordings_dir.join(recording::file_name(
+                if p.output.record_format == RecordFormat::FragmentedMp4 { "mp4" } else { "mkv" },
+            )),
             video,
             color: cs_gpu::ColorParams {
                 bt601: p.video.color_space == ColorSpace::Bt601,
@@ -499,12 +501,11 @@ impl Worker {
             },
             audio_kbps: p.output.audio_bitrate_kbps,
             tracks: p.output.record_tracks,
-            remux: matches!(
-                p.output.record_format,
-                RecordFormat::MkvRemuxMp4 | RecordFormat::Mp4 | RecordFormat::FragmentedMp4
-            ),
+            remux: matches!(p.output.record_format, RecordFormat::MkvRemuxMp4 | RecordFormat::Mp4),
             // «MP4» — то же, что MKV с ремуксом, но без исходника.
             delete_source: p.output.record_format != RecordFormat::MkvRemuxMp4 || p.output.delete_mkv_after_remux,
+            // Фрагментированный MP4 пишется сразу и не перепаковывается (безопасен при сбое).
+            fragmented: p.output.record_format == RecordFormat::FragmentedMp4,
         };
         let audio = self.audio.as_ref().map(|a| a.subscribe());
         // Создание аппаратного энкодера занимает ~80 мс: выполняется вне рендер-потока, чтобы

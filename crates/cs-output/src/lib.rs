@@ -1,6 +1,7 @@
 //! Выводы (§10): мультиплексоры MKV/MP4/fMP4/FLV, RTMP(S), ремукс, менеджер выводов.
-//! M2: MKV-мультиплексор, интерливер потоков; MP4/fMP4 и ремукс — M2c; RTMP — M3.
+//! M2: MKV, фрагментированный MP4 (запись), ремукс MKV → MP4, интерливер потоков; RTMP — M3.
 
+pub mod fmp4;
 pub mod interleave;
 pub mod mkv;
 pub mod mkv_read;

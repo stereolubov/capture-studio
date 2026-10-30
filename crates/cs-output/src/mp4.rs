@@ -14,11 +14,11 @@ use std::fs::File;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-const VIDEO_TIMESCALE: u32 = 90_000;
-const MOVIE_TIMESCALE: u32 = 1_000;
+pub(crate) const VIDEO_TIMESCALE: u32 = 90_000;
+pub(crate) const MOVIE_TIMESCALE: u32 = 1_000;
 const AAC_FRAME: u32 = 1024;
 
-fn bx(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+pub(crate) fn bx(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(payload.len() + 8);
     v.extend_from_slice(&((payload.len() + 8) as u32).to_be_bytes());
     v.extend_from_slice(kind);
@@ -26,22 +26,22 @@ fn bx(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
     v
 }
 
-fn full(kind: &[u8; 4], version: u8, flags: u32, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn full(kind: &[u8; 4], version: u8, flags: u32, payload: &[u8]) -> Vec<u8> {
     let mut p = vec![version, (flags >> 16) as u8, (flags >> 8) as u8, flags as u8];
     p.extend_from_slice(payload);
     bx(kind, &p)
 }
 
-fn u16b(v: u16) -> [u8; 2] {
+pub(crate) fn u16b(v: u16) -> [u8; 2] {
     v.to_be_bytes()
 }
-fn u32b(v: u32) -> [u8; 4] {
+pub(crate) fn u32b(v: u32) -> [u8; 4] {
     v.to_be_bytes()
 }
 
 const MATRIX: [u32; 9] = [0x0001_0000, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000];
 
-fn matrix() -> Vec<u8> {
+pub(crate) fn matrix() -> Vec<u8> {
     MATRIX.iter().flat_map(|m| m.to_be_bytes()).collect()
 }
 
@@ -121,36 +121,50 @@ fn esds(asc: &[u8], bitrate: u32) -> Vec<u8> {
     full(b"esds", 0, 0, &desc(3, &es))
 }
 
-fn stsd(t: &Track) -> Vec<u8> {
-    let entry = if t.is_video() {
-        let mut p = vec![0u8; 6];
-        p.extend_from_slice(&u16b(1)); // data_reference_index
-        p.extend_from_slice(&[0u8; 16]);
-        p.extend_from_slice(&u16b(t.info.width as u16));
-        p.extend_from_slice(&u16b(t.info.height as u16));
-        p.extend_from_slice(&u32b(0x0048_0000));
-        p.extend_from_slice(&u32b(0x0048_0000));
-        p.extend_from_slice(&u32b(0));
-        p.extend_from_slice(&u16b(1));
-        p.extend_from_slice(&[0u8; 32]);
-        p.extend_from_slice(&u16b(0x0018));
-        p.extend_from_slice(&0xFFFFu16.to_be_bytes());
-        p.extend(bx(b"avcC", &t.info.codec_private));
-        bx(b"avc1", &p)
-    } else {
-        let mut p = vec![0u8; 6];
-        p.extend_from_slice(&u16b(1));
-        p.extend_from_slice(&[0u8; 8]);
-        p.extend_from_slice(&u16b(t.info.channels.max(1) as u16));
-        p.extend_from_slice(&u16b(16));
-        p.extend_from_slice(&[0u8; 4]);
-        p.extend_from_slice(&u32b((t.info.sample_rate as u32) << 16));
-        p.extend(esds(&t.info.codec_private, 160_000));
-        bx(b"mp4a", &p)
-    };
+/// Описание видео H.264 (`avc1` с `avcC`).
+pub(crate) fn avc1_entry(width: u32, height: u32, avcc: &[u8]) -> Vec<u8> {
+    let mut p = vec![0u8; 6];
+    p.extend_from_slice(&u16b(1)); // data_reference_index
+    p.extend_from_slice(&[0u8; 16]);
+    p.extend_from_slice(&u16b(width as u16));
+    p.extend_from_slice(&u16b(height as u16));
+    p.extend_from_slice(&u32b(0x0048_0000));
+    p.extend_from_slice(&u32b(0x0048_0000));
+    p.extend_from_slice(&u32b(0));
+    p.extend_from_slice(&u16b(1));
+    p.extend_from_slice(&[0u8; 32]);
+    p.extend_from_slice(&u16b(0x0018));
+    p.extend_from_slice(&0xFFFFu16.to_be_bytes());
+    p.extend(bx(b"avcC", avcc));
+    bx(b"avc1", &p)
+}
+
+/// Описание звука AAC (`mp4a` с `esds`).
+pub(crate) fn mp4a_entry(sample_rate: u32, channels: u16, asc: &[u8]) -> Vec<u8> {
+    let mut p = vec![0u8; 6];
+    p.extend_from_slice(&u16b(1));
+    p.extend_from_slice(&[0u8; 8]);
+    p.extend_from_slice(&u16b(channels.max(1)));
+    p.extend_from_slice(&u16b(16));
+    p.extend_from_slice(&[0u8; 4]);
+    p.extend_from_slice(&u32b(sample_rate << 16));
+    p.extend(esds(asc, 160_000));
+    bx(b"mp4a", &p)
+}
+
+/// `stsd` с одним описанием.
+pub(crate) fn stsd_with(entry: Vec<u8>) -> Vec<u8> {
     let mut p = u32b(1).to_vec();
     p.extend(entry);
     full(b"stsd", 0, 0, &p)
+}
+
+fn stsd(t: &Track) -> Vec<u8> {
+    stsd_with(if t.is_video() {
+        avc1_entry(t.info.width, t.info.height, &t.info.codec_private)
+    } else {
+        mp4a_entry(t.info.sample_rate as u32, t.info.channels.max(1) as u16, &t.info.codec_private)
+    })
 }
 
 fn trak(t: &Track, offsets: &[u64], movie_duration_ms: u64) -> Vec<u8> {
@@ -444,6 +458,38 @@ mod tests {
         assert!(moov_at < mdat_at, "faststart: moov перед mdat");
         assert!(data.windows(4).any(|w| w == b"elst"), "аудио начинается на 20 мс позже видео");
         assert!(!data.windows(4).any(|w| w == b"ctts"), "без B-кадров ctts не нужен");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Раздельные дорожки: все звуковые дорожки MKV переносятся в MP4.
+    #[test]
+    fn remux_keeps_all_audio_tracks() {
+        let dir = std::env::temp_dir().join(format!("cs-mp4-tracks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let (mkv, mp4) = (dir.join("a.mkv"), dir.join("a.mp4"));
+        let avcc = vec![1, 0x64, 0, 0x28, 0xFF, 0xE1, 0, 4, 0x67, 0x64, 0, 0x28, 1, 0, 4, 0x68, 0xEE, 0x3C, 0x80];
+        let audio: Vec<AudioTrack> = (1..=3)
+            .map(|i| AudioTrack {
+                sample_rate: 48000,
+                channels: 2,
+                codec_private: vec![0x11, 0x90],
+                name: format!("Track {i}"),
+            })
+            .collect();
+        let mut w =
+            MkvWriter::create(&mkv, &VideoTrack { width: 320, height: 240, codec_private: avcc }, &audio).expect("mkv");
+        for i in 0..60i64 {
+            w.write(1, &[0, 0, 0, 2, 0x65, i as u8], i * 1000 / 30, i % 30 == 0).expect("v");
+            for t in 0..3u64 {
+                w.write(2 + t, &[0x21, 0x10, 0x04], i * 1000 / 30, true).expect("a");
+            }
+        }
+        w.finish(2000).expect("finish");
+        remux(&mkv, &mp4, |_| {}).expect("remux");
+        let data = std::fs::read(&mp4).expect("read");
+        let traks = data.windows(4).filter(|w| *w == b"trak").count();
+        let sound = data.windows(4).filter(|w| *w == b"soun").count();
+        assert_eq!((traks, sound), (4, 3), "видео + 3 звуковые дорожки");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -61,6 +61,12 @@ const APP_AUDIO_MIN_BUILD: u32 = 19041;
 const MAX_CHANNELS: usize = 8;
 
 impl SettingsDialog {
+    /// Раскрыть блок «Расширенные» (скриншот-режим).
+    pub fn show_advanced(mut self) -> Self {
+        self.advanced = true;
+        self
+    }
+
     pub fn new(app: &App, tab: SettingsTab) -> Self {
         Self {
             tab,
@@ -307,6 +313,42 @@ impl Form {
             theme::mono(theme::TEXT_SMALL),
             self.p.mute,
         );
+    }
+
+    /// Шесть переключателей дорожек 1–6 в одном поле; хотя бы одна остаётся включённой.
+    fn tracks(&mut self, ui: &mut Ui, id: &str, label: &str, mask: u8, enabled: bool) -> u8 {
+        let rect = self.row(label);
+        let cell = (rect.width() - 2.0) / 6.0;
+        let mut mask = mask;
+        for t in 0..6u8 {
+            let r = Rect::from_min_size(
+                pos2(rect.left() + 1.0 + cell * f32::from(t), rect.top() + 1.0),
+                vec2(cell, rect.height() - 2.0),
+            );
+            let sense = if enabled { Sense::click() } else { Sense::hover() };
+            let resp = w::hit(ui, r, ("trk", id, t), sense);
+            let on = mask & (1 << t) != 0;
+            if on {
+                self.painter.rect_filled(r.shrink(2.0), 3.0, self.p.selected);
+            } else if resp.hovered() && enabled {
+                self.painter.rect_filled(r.shrink(2.0), 3.0, self.p.hover);
+            }
+            w::text(
+                &self.painter,
+                r.center(),
+                Align2::CENTER_CENTER,
+                &(t + 1).to_string(),
+                theme::mono(theme::TEXT_SMALL),
+                if on { self.p.fg } else { self.p.mute },
+            );
+            if resp.clicked() {
+                let next = mask ^ (1 << t);
+                if next != 0 {
+                    mask = next;
+                }
+            }
+        }
+        mask
     }
 
     /// Поле-меню: показывает `value`, по щелчку — список действий. Возвращает выбранное.
@@ -618,6 +660,10 @@ fn output_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form, live
         let (yes, no) = (t("yes"), t("no"));
         f.toggle(ui, "lookahead", &t("field-lookahead"), &mut d.profile.output.lookahead, &yes, &no);
         f.toggle(ui, "sep-enc", &t("field-separate-encoder"), &mut d.profile.output.separate_record_encoder, &yes, &no);
+        // Раздельные дорожки записи (§10.1): какие из 6 дорожек микшера писать в файл.
+        let recording = app.engine.state().record.is_active();
+        d.profile.output.record_tracks =
+            f.tracks(ui, "rec-tracks", &t("field-record-tracks"), d.profile.output.record_tracks, !recording);
     }
 }
 

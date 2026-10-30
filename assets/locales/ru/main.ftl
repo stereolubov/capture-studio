@@ -101,6 +101,7 @@ field-profile = Профиль
 field-bframes = B-кадры
 field-lookahead = Lookahead
 field-separate-encoder = Отдельный энкодер записи
+field-record-tracks = Дорожки записи
 field-tracks = Дорожки записи
 unit-seconds = с
 unit-nits = нит

@@ -432,6 +432,8 @@ pub enum Screen {
     Filters,
     /// Настройки, вкладка «Аудио» (устройства этой машины — не для эталонов).
     SettingsAudio,
+    /// Настройки, вкладка «Вывод» с раскрытыми «Расширенными».
+    SettingsAdvanced,
 }
 
 impl Screen {
@@ -445,6 +447,7 @@ impl Screen {
             "source" => Self::Source,
             "filters" => Self::Filters,
             "settings-audio" => Self::SettingsAudio,
+            "settings-advanced" => Self::SettingsAdvanced,
             _ => return None,
         })
     }
@@ -456,7 +459,7 @@ impl App {
         match screen {
             // Рамка 1 px снаружи сетки 1280×760, как в дизайн-макете.
             Screen::Main => Vec2::new(1282.0, 762.0),
-            Screen::Settings | Screen::SettingsAudio => settings::panel_size(self, ctx),
+            Screen::Settings | Screen::SettingsAudio | Screen::SettingsAdvanced => settings::panel_size(self, ctx),
             Screen::Mixer => mixer::panel_size(self, ctx),
             Screen::Stats => stats::panel_size(self, ctx),
             Screen::Mini => mini::SIZE,
@@ -474,13 +477,15 @@ impl App {
                 let mut d = settings::SettingsDialog::new(self, SettingsTab::Output);
                 settings::draw_panel(self, ui, &mut d, rect);
             }
-            Screen::SettingsAudio => {
+            Screen::SettingsAudio | Screen::SettingsAdvanced => {
                 // Диалог живёт между проходами: по нему меряется высота панели.
-                let mut d = self
-                    .overlays
-                    .settings
-                    .take()
-                    .unwrap_or_else(|| settings::SettingsDialog::new(self, SettingsTab::Audio));
+                let mut d = self.overlays.settings.take().unwrap_or_else(|| {
+                    if screen == Screen::SettingsAudio {
+                        settings::SettingsDialog::new(self, SettingsTab::Audio)
+                    } else {
+                        settings::SettingsDialog::new(self, SettingsTab::Output).show_advanced()
+                    }
+                });
                 settings::draw_panel(self, ui, &mut d, rect);
                 self.overlays.settings = Some(d);
             }

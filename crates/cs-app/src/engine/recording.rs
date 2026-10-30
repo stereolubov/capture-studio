@@ -14,6 +14,7 @@ use cs_encode::VideoEncoder;
 use cs_encode::mf_aac::MfAacEncoder;
 use cs_encode::{Packet, VideoSettings, avc};
 use cs_gpu::{ColorConverter, ColorParams, GpuDevice};
+use cs_output::fmp4::Fmp4Writer;
 use cs_output::interleave::Interleaver;
 use cs_output::mkv::{AudioTrack, MkvWriter, VideoTrack};
 use std::path::PathBuf;
@@ -39,6 +40,8 @@ pub struct RecordingConfig {
     pub tracks: u8,
     /// После остановки перепаковать MKV в MP4.
     pub remux: bool,
+    /// Писать сразу фрагментированный MP4 (§10.1) вместо MKV.
+    pub fragmented: bool,
     /// Удалить MKV после успешного ремукса.
     pub delete_source: bool,
 }
@@ -240,9 +243,10 @@ impl Recording {
         let path = cfg.path.clone();
         let mstats = stats.clone();
         let (w, h) = (vs.width, vs.height);
+        let (fragmented, frame_100ns) = (cfg.fragmented, vs.frame_duration());
         let n_audio = tracks.len();
         threads.push(std::thread::Builder::new().name("muxer".into()).spawn(move || {
-            if let Err(e) = mux_loop(&path, mux_rx, w, h, n_audio, &mstats) {
+            if let Err(e) = mux_loop(&path, mux_rx, (w, h), n_audio, (fragmented, frame_100ns), &mstats) {
                 tracing::error!("запись {}: {e}", path.display());
                 let _ = events.send(Event::Error(format!("запись: {e}")));
             }
@@ -382,16 +386,22 @@ fn remux_file(
     }
 }
 
+/// Контейнер записи: MKV (по умолчанию, перепаковка в MP4 после остановки) или фрагментированный MP4.
+enum Container {
+    Mkv(MkvWriter),
+    Fmp4(Fmp4Writer),
+}
+
 fn mux_loop(
     path: &std::path::Path,
     rx: Receiver<MuxMsg>,
-    w: u32,
-    h: u32,
+    (w, h): (u32, u32),
     n_audio: usize,
+    (fragmented, frame_100ns): (bool, i64),
     stats: &RecordStats,
 ) -> std::io::Result<()> {
     let mut il: Interleaver<Packet> = Interleaver::new(1 + n_audio, 1_000);
-    let mut writer: Option<MkvWriter> = None;
+    let mut writer: Option<Container> = None;
     // Аудио до первого ключевого кадра видео копится, затем отбрасывается всё, что раньше него.
     let mut pending: Vec<MuxMsg> = Vec::new();
     let mut first_video_ms: Option<i64> = None;
@@ -401,12 +411,15 @@ fn mux_loop(
     let ms = |p: &Packet| p.pts / 10_000;
     let dts_ms = |p: &Packet| p.dts / 10_000;
     let write =
-        |w: &mut MkvWriter, stream: usize, t: i64, p: &Packet, base: i64, last: &mut i64| -> std::io::Result<()> {
+        |w: &mut Container, stream: usize, t: i64, p: &Packet, base: i64, last: &mut i64| -> std::io::Result<()> {
             let rel = t - base;
             *last = (*last).max(rel);
             let data = if stream == 0 { avc::annexb_to_length_prefixed(&p.data) } else { p.data.clone() };
             stats.bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
-            w.write((stream + 1) as u64, &data, rel, p.keyframe)
+            match w {
+                Container::Mkv(w) => w.write((stream + 1) as u64, &data, rel, p.keyframe),
+                Container::Fmp4(w) => w.write(stream, &data, p.pts, p.dts, p.keyframe),
+            }
         };
     for (stream, p) in rx.iter() {
         if writer.is_none() {
@@ -422,11 +435,12 @@ fn mux_loop(
                         name: format!("Track {}", i + 1),
                     })
                     .collect();
-                writer = Some(MkvWriter::create(
-                    path,
-                    &VideoTrack { width: w, height: h, codec_private: avc::avcc(&sps, &pps) },
-                    &audio,
-                )?);
+                let video = VideoTrack { width: w, height: h, codec_private: avc::avcc(&sps, &pps) };
+                writer = Some(if fragmented {
+                    Container::Fmp4(Fmp4Writer::create(path, &video, &audio, p.pts, p.dts, frame_100ns)?)
+                } else {
+                    Container::Mkv(MkvWriter::create(path, &video, &audio)?)
+                });
                 first_video_ms = Some(ms(&p));
                 for (s, q) in pending.drain(..) {
                     il.push(s, dts_ms(&q), q);
@@ -456,7 +470,10 @@ fn mux_loop(
                 write(&mut w, s, t, &p, base, &mut last_ms)?;
             }
         }
-        w.finish(last_ms)?;
+        match w {
+            Container::Mkv(w) => w.finish(last_ms)?,
+            Container::Fmp4(w) => w.finish()?,
+        }
     }
     Ok(())
 }
