@@ -153,6 +153,24 @@ fn params(app: &App, ui: &mut egui::Ui, kind: &mut AudioFilterKind) {
                 }
             }
         }
+        AudioFilterKind::Compressor { threshold_db, ratio, attack_ms, release_ms, makeup_db } => {
+            use cs_audio::filters::{COMP_ATTACK_MS, COMP_MAKEUP_DB, COMP_RATIO, COMP_RELEASE_MS, COMP_THRESHOLD_DB};
+            fn db(v: &mut f32, r: (f32, f32)) -> egui::Slider<'_> {
+                egui::Slider::new(v, r.0..=r.1).step_by(0.5).suffix(" dB")
+            }
+            fn ms(v: &mut f32, r: (f32, f32)) -> egui::Slider<'_> {
+                egui::Slider::new(v, r.0..=r.1).logarithmic(true).step_by(1.0).fixed_decimals(0).suffix(" ms")
+            }
+            labeled(app, ui, "comp-threshold", |ui| ui.add(db(threshold_db, COMP_THRESHOLD_DB)));
+            labeled(app, ui, "comp-ratio", |ui| {
+                ui.add(
+                    egui::Slider::new(ratio, COMP_RATIO.0..=COMP_RATIO.1).logarithmic(true).step_by(0.1).suffix(":1"),
+                )
+            });
+            labeled(app, ui, "comp-attack", |ui| ui.add(ms(attack_ms, COMP_ATTACK_MS)));
+            labeled(app, ui, "comp-release", |ui| ui.add(ms(release_ms, COMP_RELEASE_MS)));
+            labeled(app, ui, "comp-makeup", |ui| ui.add(db(makeup_db, COMP_MAKEUP_DB)));
+        }
     }
 }
 

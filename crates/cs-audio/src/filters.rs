@@ -17,6 +17,13 @@ pub const GATE_ATTACK_MS: (f32, f32) = (1.0, 500.0);
 pub const GATE_HOLD_MS: (f32, f32) = (0.0, 2000.0);
 pub const GATE_RELEASE_MS: (f32, f32) = (1.0, 2000.0);
 
+/// Пределы параметров компрессора.
+pub const COMP_THRESHOLD_DB: (f32, f32) = (-60.0, 0.0);
+pub const COMP_RATIO: (f32, f32) = (1.0, 32.0);
+pub const COMP_ATTACK_MS: (f32, f32) = (1.0, 500.0);
+pub const COMP_RELEASE_MS: (f32, f32) = (1.0, 1000.0);
+pub const COMP_MAKEUP_DB: (f32, f32) = (0.0, 30.0);
+
 /// Сэмплов в миллисекунде на частоте микшера.
 const PER_MS: f32 = crate::mixer::SAMPLE_RATE as f32 / 1000.0;
 
@@ -35,6 +42,7 @@ enum StageKind {
     Gain(Gain),
     Denoise(Box<Denoise>),
     Gate(Gate),
+    Compressor(Compressor),
 }
 
 impl FilterChain {
@@ -49,6 +57,9 @@ impl FilterChain {
                     AudioFilterKind::NoiseSuppress => StageKind::Denoise(Box::new(Denoise::new())),
                     AudioFilterKind::Gate { open_db, close_db, attack_ms, hold_ms, release_ms } => {
                         StageKind::Gate(Gate::new(open_db, close_db, attack_ms, hold_ms, release_ms))
+                    }
+                    AudioFilterKind::Compressor { threshold_db, ratio, attack_ms, release_ms, makeup_db } => {
+                        StageKind::Compressor(Compressor::new(threshold_db, ratio, attack_ms, release_ms, makeup_db))
                     }
                 },
             })
@@ -65,6 +76,7 @@ impl FilterChain {
                 // Сеть RNNoise продолжает со своим состоянием: без повторного «разгона».
                 (StageKind::Denoise(n), StageKind::Denoise(o)) => std::mem::swap(n, o),
                 (StageKind::Gate(n), StageKind::Gate(o)) => n.adopt(o),
+                (StageKind::Compressor(n), StageKind::Compressor(o)) => n.env = o.env,
                 _ => {}
             }
         }
@@ -77,7 +89,7 @@ impl FilterChain {
             .iter()
             .filter(|s| s.enabled)
             .map(|s| match s.kind {
-                StageKind::Gain(_) | StageKind::Gate(_) => 0,
+                StageKind::Gain(_) | StageKind::Gate(_) | StageKind::Compressor(_) => 0,
                 StageKind::Denoise(_) => DenoiseState::FRAME_SIZE,
             })
             .sum()
@@ -90,6 +102,7 @@ impl FilterChain {
                 StageKind::Gain(g) => g.process(buf),
                 StageKind::Denoise(d) => d.process(buf),
                 StageKind::Gate(g) => g.process(buf),
+                StageKind::Compressor(c) => c.process(buf),
             }
         }
     }
@@ -185,6 +198,44 @@ impl Gate {
             }
             f[0] *= self.gain;
             f[1] *= self.gain;
+        }
+    }
+}
+
+/// Компрессор. Детектор — пик по обоим каналам, сглаженный атакой (рост) и спадом (убывание);
+/// превышение над порогом сжимается в `ratio` раз, затем компенсирующее усиление.
+struct Compressor {
+    threshold_db: f32,
+    slope: f32,
+    attack: f32,
+    release: f32,
+    makeup_db: f32,
+    env: f32,
+}
+
+impl Compressor {
+    fn new(threshold_db: f32, ratio: f32, attack_ms: f32, release_ms: f32, makeup_db: f32) -> Self {
+        let coef = |ms: f32| (-1.0 / (ms * PER_MS)).exp();
+        Self {
+            threshold_db: threshold_db.clamp(COMP_THRESHOLD_DB.0, COMP_THRESHOLD_DB.1),
+            slope: 1.0 - 1.0 / ratio.clamp(COMP_RATIO.0, COMP_RATIO.1),
+            attack: coef(attack_ms.clamp(COMP_ATTACK_MS.0, COMP_ATTACK_MS.1)),
+            release: coef(release_ms.clamp(COMP_RELEASE_MS.0, COMP_RELEASE_MS.1)),
+            makeup_db: makeup_db.clamp(COMP_MAKEUP_DB.0, COMP_MAKEUP_DB.1),
+            env: 0.0,
+        }
+    }
+
+    fn process(&mut self, buf: &mut [f32]) {
+        for f in buf.as_chunks_mut::<2>().0 {
+            let level = f[0].abs().max(f[1].abs());
+            let k = if level > self.env { self.attack } else { self.release };
+            self.env = k * self.env + (1.0 - k) * level;
+            let over = 20.0 * self.env.max(1e-9).log10() - self.threshold_db;
+            let reduction = if over > 0.0 { over * self.slope } else { 0.0 };
+            let g = db_to_gain(self.makeup_db - reduction);
+            f[0] *= g;
+            f[1] *= g;
         }
     }
 }
@@ -372,6 +423,47 @@ mod tests {
         let mut mid = tone(-29.0, 600);
         run(&mut open, &mut mid);
         assert!(peak(&mid[mid.len() - 9600..]) > 0.9 * db_to_gain(-29.0), "открытый гейт не закрывается");
+    }
+
+    fn compressor(threshold_db: f32, ratio: f32, makeup_db: f32) -> FilterChain {
+        let kind = AudioFilterKind::Compressor { threshold_db, ratio, attack_ms: 6.0, release_ms: 60.0, makeup_db };
+        FilterChain::new(&[AudioFilter { enabled: true, kind }])
+    }
+
+    fn peak_db(s: &[f32]) -> f32 {
+        20.0 * peak(s).log10()
+    }
+
+    /// Синус −6 dBFS при пороге −18 дБ и 4:1: превышение 12 дБ сжимается до 3 дБ → −15 dBFS.
+    /// Ниже порога сигнал не меняется; компенсация добавляется целиком.
+    #[test]
+    fn compressor_static_curve() {
+        let mut loud = tone(-6.0, 500);
+        run(&mut compressor(-18.0, 4.0, 0.0), &mut loud);
+        let settled = peak_db(&loud[loud.len() - 9600..]);
+        // Детектор сглаживает пики синуса, поэтому допуск ±1 дБ.
+        assert!((settled + 15.0).abs() < 1.0, "{settled} dBFS");
+
+        let mut quiet = tone(-30.0, 300);
+        run(&mut compressor(-18.0, 4.0, 0.0), &mut quiet);
+        assert!((peak_db(&quiet[quiet.len() - 9600..]) + 30.0).abs() < 0.05);
+
+        let mut quiet = tone(-30.0, 300);
+        run(&mut compressor(-18.0, 4.0, 6.0), &mut quiet);
+        assert!((peak_db(&quiet[quiet.len() - 9600..]) + 24.0).abs() < 0.05, "компенсация +6 дБ");
+    }
+
+    /// Атака 6 мс: скачок громкости сжимается не мгновенно, но за десятки миллисекунд.
+    #[test]
+    fn compressor_attack_is_gradual() {
+        let mut c = compressor(-18.0, 4.0, 0.0);
+        run(&mut c, &mut tone(-30.0, 200));
+        let mut step = tone(-6.0, 200);
+        run(&mut c, &mut step);
+        let first = peak_db(&step[..96]); // первая 1 мс
+        let later = peak_db(&step[96 * 50..96 * 60]); // 50–60 мс
+        assert!(first > -9.0, "в начале сжатие ещё слабое: {first}");
+        assert!(later < -13.0, "к 50 мс сжатие почти полное: {later}");
     }
 
     /// Смена параметра переносит состояние: переход идёт плавно от прежнего значения.

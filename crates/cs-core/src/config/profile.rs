@@ -253,14 +253,23 @@ pub enum AudioFilterKind {
     NoiseSuppress,
     /// Шумовой гейт: пороги открытия/закрытия (дБ), атака, удержание, спад (мс).
     Gate { open_db: f32, close_db: f32, attack_ms: f32, hold_ms: f32, release_ms: f32 },
+    /// Компрессор: порог (дБ), степень сжатия (n:1), атака, спад (мс), компенсация усиления (дБ).
+    Compressor { threshold_db: f32, ratio: f32, attack_ms: f32, release_ms: f32, makeup_db: f32 },
 }
 
 impl AudioFilterKind {
     /// Все типы с параметрами по умолчанию — для меню «Добавить фильтр».
-    pub const ALL: [AudioFilterKind; 3] = [
+    pub const ALL: [AudioFilterKind; 4] = [
         AudioFilterKind::Gain { db: 0.0 },
         AudioFilterKind::NoiseSuppress,
         AudioFilterKind::Gate { open_db: -26.0, close_db: -32.0, attack_ms: 25.0, hold_ms: 200.0, release_ms: 150.0 },
+        AudioFilterKind::Compressor {
+            threshold_db: -18.0,
+            ratio: 4.0,
+            attack_ms: 6.0,
+            release_ms: 60.0,
+            makeup_db: 0.0,
+        },
     ];
 
     /// Ключ локализации названия.
@@ -269,6 +278,7 @@ impl AudioFilterKind {
             AudioFilterKind::Gain { .. } => "filter-gain",
             AudioFilterKind::NoiseSuppress => "filter-noise",
             AudioFilterKind::Gate { .. } => "filter-gate",
+            AudioFilterKind::Compressor { .. } => "filter-compressor",
         }
     }
 }
@@ -363,6 +373,7 @@ mod tests {
             AudioFilter { enabled: false, kind: AudioFilterKind::Gain { db: -3.0 } },
             AudioFilter { enabled: true, kind: AudioFilterKind::NoiseSuppress },
             AudioFilter { enabled: true, kind: AudioFilterKind::ALL[2] },
+            AudioFilter { enabled: true, kind: AudioFilterKind::ALL[3] },
         ];
         let mut t = toml::Table::try_from(&p).expect("ser");
         t.insert("schema_version".into(), toml::Value::Integer(1));
