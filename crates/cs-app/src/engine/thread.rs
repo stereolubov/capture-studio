@@ -9,7 +9,7 @@ use cs_audio::engine::{AudioEngine, ChannelConfig};
 use cs_audio::mixer::ChannelControl;
 use cs_audio::wasapi::Direction;
 use cs_capture::{CaptureContext, Content, SourceState, VideoSource, enumerate};
-use cs_core::config::profile::AudioChannelKind;
+use cs_core::config::profile::{AudioChannelKind, EncoderKind};
 use cs_core::config::{self, Profile};
 use cs_core::geometry;
 use cs_core::model::{Scene, SceneCollection, SourceId, SourceKind};
@@ -174,6 +174,8 @@ fn build_state(
         can_redo,
         live_engine: true,
         remux_progress: None,
+        encoders: Vec::new(),
+        auto_encoder: None,
     }
 }
 
@@ -251,6 +253,58 @@ struct Worker {
     audio_keys: Vec<AudioKey>,
     /// Состав каналов или устройства изменились во время записи: перезапуск после остановки.
     audio_restart_pending: bool,
+    /// Итоги пробного кодирования (заполняет фоновый поток при запуске).
+    probes: Arc<parking_lot::Mutex<Vec<cs_encode::probe::Probe>>>,
+}
+
+/// Параметры энкодера записи из профиля (тюнинг «качество»).
+fn encoder_options(p: &Profile) -> cs_encode::EncoderOptions {
+    use cs_encode::H264Profile;
+    cs_encode::EncoderOptions {
+        preset: p.output.preset,
+        profile: match p.output.h264_profile.as_str() {
+            "baseline" => H264Profile::Baseline,
+            "main" => H264Profile::Main,
+            _ => H264Profile::High,
+        },
+        low_latency: false,
+        lookahead: p.output.lookahead,
+        b_frames: p.output.b_frames,
+    }
+}
+
+fn encoder_kind(c: cs_encode::EncoderChoice) -> EncoderKind {
+    use cs_encode::EncoderChoice as C;
+    match c {
+        C::Auto => EncoderKind::Auto,
+        C::Nvenc => EncoderKind::Nvenc,
+        C::Amf => EncoderKind::Amf,
+        C::Qsv => EncoderKind::Qsv,
+        C::MediaFoundation => EncoderKind::MediaFoundation,
+        C::Software => EncoderKind::Software,
+    }
+}
+
+/// Пробное кодирование всех энкодеров в фоне (§9.1): до готовности «Авто» перебирает цепочку
+/// при старте записи.
+fn spawn_probe(
+    gpu: Arc<GpuDevice>,
+    opts: cs_encode::EncoderOptions,
+) -> Arc<parking_lot::Mutex<Vec<cs_encode::probe::Probe>>> {
+    let out = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let slot = out.clone();
+    let spawned = std::thread::Builder::new().name("encoder-probe".into()).spawn(move || {
+        let probes = cs_encode::probe::probe_all(&gpu.device, &opts);
+        match cs_encode::probe::pick(&probes) {
+            Some(c) => tracing::info!("автовыбор энкодера: {c:?}"),
+            None => tracing::warn!("автовыбор энкодера: ни один энкодер не прошёл пробу"),
+        }
+        *slot.lock() = probes;
+    });
+    if let Err(e) = spawned {
+        tracing::warn!("проба энкодеров не запущена: {e}");
+    }
+    out
 }
 
 /// Канал движка для сопоставления при перезапуске.
@@ -442,7 +496,6 @@ impl Worker {
         use cs_core::config::profile::{
             ColorRange, ColorSpace, EncoderKind, RateControl as Rc, RecordFormat, ScaleFilter,
         };
-        use cs_encode::{EncoderOptions, H264Profile};
         if let Some(free) = free_mb(&self.recordings_dir)
             && free < STOP_FREE_MB
         {
@@ -480,7 +533,10 @@ impl Worker {
                 ScaleFilter::Lanczos => cs_gpu::ScaleKernel::Lanczos,
             },
             encoder: match p.output.encoder {
-                EncoderKind::Auto => cs_encode::EncoderChoice::Auto,
+                // «Авто» — победитель пробы; пока проба идёт — перебор цепочки.
+                EncoderKind::Auto => {
+                    cs_encode::probe::pick(&self.probes.lock()).unwrap_or(cs_encode::EncoderChoice::Auto)
+                }
                 EncoderKind::Nvenc => cs_encode::EncoderChoice::Nvenc,
                 EncoderKind::Amf => cs_encode::EncoderChoice::Amf,
                 EncoderKind::Qsv => cs_encode::EncoderChoice::Qsv,
@@ -488,17 +544,7 @@ impl Worker {
                 EncoderKind::Software => cs_encode::EncoderChoice::Software,
             },
             // Запись — тюнинг «качество».
-            nvenc: EncoderOptions {
-                preset: p.output.preset,
-                profile: match p.output.h264_profile.as_str() {
-                    "baseline" => H264Profile::Baseline,
-                    "main" => H264Profile::Main,
-                    _ => H264Profile::High,
-                },
-                low_latency: false,
-                lookahead: p.output.lookahead,
-                b_frames: p.output.b_frames,
-            },
+            nvenc: encoder_options(p),
             audio_kbps: p.output.audio_bitrate_kbps,
             tracks: p.output.record_tracks,
             remux: matches!(p.output.record_format, RecordFormat::MkvRemuxMp4 | RecordFormat::Mp4),
@@ -724,6 +770,17 @@ impl Worker {
         );
         state.audio = audio_channels(self.audio.as_ref(), &self.monitor);
         state.remux_progress = *self.remux_progress.lock();
+        {
+            let probes = self.probes.lock();
+            state.encoders = probes
+                .iter()
+                .map(|p| cs_core::state::EncoderStatus {
+                    kind: encoder_kind(p.choice),
+                    unavailable: p.result.as_ref().err().cloned(),
+                })
+                .collect();
+            state.auto_encoder = cs_encode::probe::pick(&probes).map(encoder_kind);
+        }
         if self.recording_starting.is_some() {
             state.record = OutputStatus::Starting;
         }
@@ -888,7 +945,9 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         monitor: Vec::new(),
         audio_keys: Vec::new(),
         audio_restart_pending: false,
+        probes: Arc::default(),
     };
+    w.probes = spawn_probe(w.gpu.clone(), encoder_options(&w.profile));
     w.audio = start_audio(&w.profile);
     w.monitor = vec![MonitorMode::Off; w.profile.audio.channels.len()];
     w.audio_keys = w.profile.audio.channels.iter().map(|c| (c.kind, c.app.clone())).collect();

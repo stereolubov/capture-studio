@@ -397,6 +397,22 @@ impl Form {
         sel: &mut usize,
         enabled: bool,
     ) -> bool {
+        self.dropdown_with(ui, id, label, options, &[], sel, enabled)
+    }
+
+    /// Выпадающий список, где часть пунктов неактивна: `disabled[i]` — причина (подсказка при
+    /// наведении), такой пункт нельзя выбрать (§9.1: недоступный энкодер — неактивен с причиной).
+    #[expect(clippy::too_many_arguments, reason = "плоский вызов читается проще, чем builder для одного поля")]
+    fn dropdown_with(
+        &mut self,
+        ui: &mut Ui,
+        id: &str,
+        label: &str,
+        options: &[String],
+        disabled: &[Option<String>],
+        sel: &mut usize,
+        enabled: bool,
+    ) -> bool {
         let rect = self.row(label);
         let sense = if enabled { Sense::click() } else { Sense::hover() };
         let mut resp = w::hit(ui, rect, ("dd", id), sense);
@@ -413,8 +429,13 @@ impl Form {
             egui::Popup::menu(&resp).width(rect.width()).gap(2.0).show(|ui| {
                 ui.set_min_width(rect.width() - 12.0);
                 for (i, o) in options.iter().enumerate() {
-                    let text = egui::RichText::new(o).font(theme::mono(theme::TEXT_SMALL)).color(p.fg);
-                    if ui.selectable_label(i == *sel, text).clicked() {
+                    let reason = disabled.get(i).and_then(Option::as_ref);
+                    let color = if reason.is_some() { p.mute } else { p.fg };
+                    let text = egui::RichText::new(o).font(theme::mono(theme::TEXT_SMALL)).color(color);
+                    let resp = ui.add_enabled(reason.is_none(), egui::Button::selectable(i == *sel, text));
+                    if let Some(why) = reason {
+                        resp.on_disabled_hover_text(why);
+                    } else if resp.clicked() {
                         *sel = i;
                         changed = true;
                         ui.close();
@@ -632,11 +653,27 @@ fn output_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form, live
     ];
     let enc_names =
         ["encoder-nvenc", "encoder-amf", "encoder-qsv", "encoder-mf", "encoder-software", "encoder-auto"].map(t);
-    // «Авто» в мок-режиме показывает выбранный автоматически NVENC (как в дизайне).
-    let shown =
-        if d.profile.output.encoder == EncoderKind::Auto { EncoderKind::Nvenc } else { d.profile.output.encoder };
+    // «Авто» показывает энкодер, выбранный пробой (как в дизайне); до конца пробы — NVENC.
+    let state = app.engine.state();
+    let shown = if d.profile.output.encoder == EncoderKind::Auto {
+        state.auto_encoder.unwrap_or(EncoderKind::Nvenc)
+    } else {
+        d.profile.output.encoder
+    };
+    // Не прошедшие пробу — неактивны с причиной. Программный остаётся доступным: под ним кнопка
+    // загрузки OpenH264.
+    let disabled: Vec<Option<String>> = encoders
+        .iter()
+        .map(|k| {
+            state
+                .encoders
+                .iter()
+                .find(|s| s.kind == *k && *k != EncoderKind::Software)
+                .and_then(|s| s.unavailable.clone())
+        })
+        .collect();
     let mut sel = index_of(&encoders, shown);
-    if f.dropdown(ui, "encoder", &t("field-encoder"), &enc_names, &mut sel, !live) {
+    if f.dropdown_with(ui, "encoder", &t("field-encoder"), &enc_names, &disabled, &mut sel, !live) {
         d.profile.output.encoder = encoders[sel];
     }
     if d.profile.output.encoder == EncoderKind::Software {

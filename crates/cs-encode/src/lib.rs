@@ -19,6 +19,8 @@ pub mod nvenc;
 #[cfg(windows)]
 pub mod openh264;
 #[cfg(windows)]
+pub mod probe;
+#[cfg(windows)]
 pub mod qsv;
 
 /// Какой видеоэнкодер открывать (§9.1).
@@ -149,6 +151,17 @@ impl VideoEncoder {
             Self::Amf(e) => &e.name,
             Self::Qsv(e) => &e.name,
             Self::Software(e) => &e.name,
+        }
+    }
+
+    /// Кадров отброшено из-за переполнения очереди энкодера.
+    pub fn dropped(&self) -> u64 {
+        match self {
+            Self::Mf(e) => e.dropped,
+            Self::Nvenc(e) => e.dropped,
+            Self::Amf(e) => e.dropped,
+            Self::Qsv(e) => e.dropped,
+            Self::Software(e) => e.dropped,
         }
     }
 

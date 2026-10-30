@@ -175,6 +175,14 @@ impl Stats {
     }
 }
 
+/// Итог пробного кодирования энкодера (§9.1) — для списка энкодеров в настройках.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EncoderStatus {
+    pub kind: crate::config::profile::EncoderKind,
+    /// `None` — энкодер работает; иначе причина недоступности.
+    pub unavailable: Option<String>,
+}
+
 /// Краткая сводка настроек вывода для строки под превью.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputSummary {
@@ -210,6 +218,10 @@ pub struct AppState {
     pub live_engine: bool,
     /// Прогресс ремукса MKV → MP4 (0…1), пока он идёт.
     pub remux_progress: Option<f32>,
+    /// Итоги пробного кодирования по порядку автовыбора (пусто, пока проба идёт).
+    pub encoders: Vec<EncoderStatus>,
+    /// Энкодер, который выбирает «Авто» (первый рабочий по итогам пробы).
+    pub auto_encoder: Option<crate::config::profile::EncoderKind>,
 }
 
 /// Команды от UI (и горячих клавиш) к движку.

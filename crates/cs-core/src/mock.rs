@@ -38,6 +38,19 @@ fn level_from_fraction(f: f32) -> f32 {
 }
 
 /// Высоты столбцов графика битрейта из дизайна (в долях от 6000 kbps·1.28).
+/// Итоги пробы для дизайна: машина с GPU NVIDIA.
+fn design_encoders() -> Vec<crate::state::EncoderStatus> {
+    use crate::config::profile::EncoderKind;
+    let st = |kind, why: Option<&str>| crate::state::EncoderStatus { kind, unavailable: why.map(Into::into) };
+    vec![
+        st(EncoderKind::Nvenc, None),
+        st(EncoderKind::Amf, Some("нет GPU AMD")),
+        st(EncoderKind::Qsv, Some("нет GPU Intel")),
+        st(EncoderKind::MediaFoundation, None),
+        st(EncoderKind::Software, Some("OpenH264 не установлен")),
+    ]
+}
+
 fn design_bitrate_history() -> Vec<f32> {
     (0..60)
         .map(|i| {
@@ -197,6 +210,8 @@ impl MockEngine {
                 can_redo: false,
                 live_engine: false,
                 remux_progress: None,
+                encoders: design_encoders(),
+                auto_encoder: Some(crate::config::profile::EncoderKind::Nvenc),
             },
             animate,
             last_tick: Ticks::now(),

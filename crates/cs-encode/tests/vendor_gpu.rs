@@ -112,3 +112,23 @@ fn auto_picks_working_encoder() {
     let enc = VideoEncoder::open(&gpu.device, &s, EncoderChoice::Auto, &EncoderOptions::default()).expect("encoder");
     eprintln!("автовыбор: {}", enc.name());
 }
+
+/// Пробное кодирование 10 кадров каждым энкодером: на машине с GPU NVIDIA — NVENC и MF рабочие,
+/// AMF/QSV недоступны с причиной; автовыбор — первый рабочий.
+#[test]
+#[ignore = "нужен GPU"]
+fn probe_reports_each_encoder() {
+    let gpu = GpuDevice::new(cs_gpu::DriverKind::Hardware).expect("gpu");
+    let probes = cs_encode::probe::probe_all(&gpu.device, &EncoderOptions::default());
+    for p in &probes {
+        eprintln!("{:?}: {:?}", p.choice, p.result);
+    }
+    assert_eq!(probes.len(), cs_encode::probe::ORDER.len());
+    let picked = cs_encode::probe::pick(&probes).expect("хотя бы один энкодер работает");
+    let ok = |c| probes.iter().any(|p| p.choice == c && p.result.is_ok());
+    if gpu.adapter.vendor_id == 0x10DE {
+        assert!(ok(EncoderChoice::Nvenc) && ok(EncoderChoice::MediaFoundation));
+        assert!(!ok(EncoderChoice::Amf) && !ok(EncoderChoice::Qsv));
+        assert_eq!(picked, EncoderChoice::Nvenc);
+    }
+}
