@@ -209,6 +209,8 @@ pub enum AudioChannelKind {
     Desktop,
     /// Устройство ввода.
     Mic,
+    /// Звук приложения (process loopback, Windows 10 2004+); exe — в `app`.
+    App,
 }
 
 /// Сохраняемые настройки канала микшера (§8.2).
@@ -228,6 +230,9 @@ pub struct AudioChannelSettings {
     /// Цепочка фильтров (§8.3), по порядку применения.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<AudioFilter>,
+    /// Имя exe для канала «Звук приложения».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
 }
 
 /// Фильтр канала (§8.3). Цепочка применяется по порядку, до фейдера.
@@ -307,6 +312,7 @@ impl Default for AudioSettings {
                     tracks: 0b1,
                     sync_offset_ms: 0,
                     filters: Vec::new(),
+                    app: None,
                 },
                 AudioChannelSettings {
                     name: "Микрофон".into(),
@@ -316,6 +322,7 @@ impl Default for AudioSettings {
                     tracks: 0b1,
                     sync_offset_ms: 0,
                     filters: Vec::new(),
+                    app: None,
                 },
             ],
         }

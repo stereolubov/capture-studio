@@ -158,6 +158,12 @@ field-desktop-device = Desktop audio
 field-mic-device = Microphone
 field-monitor-device = Monitoring
 device-default = Default
+device-missing = Saved device (not connected)
+audio-apps = Application audio
+audio-app-add = Add
+audio-app-choose = Choose an application
+audio-apps-none = No applications playing sound — start playback in the app
+audio-app-remove = Remove channel
 
 field-canvas = Canvas resolution
 field-output-res = Output resolution

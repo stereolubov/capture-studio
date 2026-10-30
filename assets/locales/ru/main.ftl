@@ -158,6 +158,12 @@ field-desktop-device = Звук рабочего стола
 field-mic-device = Микрофон
 field-monitor-device = Мониторинг
 device-default = По умолчанию
+device-missing = Сохранённое устройство (не подключено)
+audio-apps = Звук приложений
+audio-app-add = Добавить
+audio-app-choose = Выберите приложение
+audio-apps-none = Нет приложений со звуком — включите звук в приложении
+audio-app-remove = Удалить канал
 
 field-canvas = Разрешение холста
 field-output-res = Выходное разрешение

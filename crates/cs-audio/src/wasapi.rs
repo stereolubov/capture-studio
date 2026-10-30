@@ -1,8 +1,10 @@
-//! WASAPI (§8.1): звук рабочего стола (loopback устройства вывода) и микрофон (shared mode).
+//! WASAPI (§8.1): звук рабочего стола (loopback устройства вывода), микрофон (shared mode)
+//! и звук приложения (process loopback с дочерними процессами, Windows 10 2004+).
 //!
 //! Поток захвата на источник: опрос каждые 5 мс (loopback не присылает событий, когда ничего
 //! не играет), преобразование в float32 стерео 48 кГц, запись в очередь канала.
 //! Устройство по умолчанию отслеживается раз в 2 с; потеря устройства — переподключение.
+//! Приложение ищется по имени exe; закрылось — канал ждёт его нового запуска.
 
 use crate::mixer::AudioQueue;
 use crate::resample::Resampler;
@@ -17,6 +19,7 @@ use windows::Win32::Media::Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FO
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, STGM_READ,
 };
+use windows::core::Interface;
 
 /// Направление устройства.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +28,8 @@ pub enum Direction {
     Render,
     /// Устройство ввода (микрофон).
     Capture,
+    /// Звук приложения: «устройство» канала — имя exe.
+    App,
 }
 
 /// Аудиоустройство.
@@ -36,7 +41,7 @@ pub struct DeviceInfo {
 
 fn flow(d: Direction) -> EDataFlow {
     match d {
-        Direction::Render => eRender,
+        Direction::Render | Direction::App => eRender,
         Direction::Capture => eCapture,
     }
 }
@@ -119,6 +124,9 @@ struct Stream {
 }
 
 fn open(direction: Direction, device: Option<&str>) -> windows::core::Result<(Stream, String)> {
+    if direction == Direction::App {
+        return open_app(device.unwrap_or_default());
+    }
     let en = enumerator()?;
     // SAFETY: COM-вызовы WASAPI; указатель формата освобождается CoTaskMemFree после копирования полей.
     unsafe {
@@ -164,6 +172,192 @@ fn open(direction: Direction, device: Option<&str>) -> windows::core::Result<(St
         };
         Ok((stream, name))
     }
+}
+
+/// Захват звука приложения по имени exe (с дочерними процессами), формат сразу 48 кГц float стерео.
+fn open_app(exe: &str) -> windows::core::Result<(Stream, String)> {
+    use windows::Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT;
+    let pid = find_app_pid(exe).ok_or_else(|| windows::core::Error::from(windows::Win32::Foundation::E_FAIL))?;
+    let client = process_loopback_client(pid)?;
+    let rate = crate::mixer::SAMPLE_RATE;
+    let fmt = WAVEFORMATEX {
+        wFormatTag: WAVE_FORMAT_IEEE_FLOAT as u16,
+        nChannels: 2,
+        nSamplesPerSec: rate,
+        nAvgBytesPerSec: rate * 8,
+        nBlockAlign: 8,
+        wBitsPerSample: 32,
+        cbSize: 0,
+    };
+    // SAFETY: COM-вызовы WASAPI с форматом на стеке.
+    unsafe {
+        let flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
+        client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 1_000_000, 0, &fmt, None)?;
+        let capture: IAudioCaptureClient = client.GetService()?;
+        client.Start()?;
+        let stream = Stream {
+            capture,
+            format: SampleFormat::F32,
+            channels: 2,
+            resampler: Resampler::new(rate, rate),
+            device_id: pid.to_string(),
+            _client: client,
+        };
+        Ok((stream, app_title(exe)))
+    }
+}
+
+/// Имя приложения для UI: exe без расширения.
+pub fn app_title(exe: &str) -> String {
+    exe.strip_suffix(".exe").or_else(|| exe.strip_suffix(".EXE")).unwrap_or(exe).to_owned()
+}
+
+#[windows_core::implement(IActivateAudioInterfaceCompletionHandler, windows::Win32::System::Com::IAgileObject)]
+struct ActivateDone(std::sync::mpsc::Sender<()>);
+
+impl IActivateAudioInterfaceCompletionHandler_Impl for ActivateDone_Impl {
+    fn ActivateCompleted(
+        &self,
+        _op: windows_core::Ref<IActivateAudioInterfaceAsyncOperation>,
+    ) -> windows::core::Result<()> {
+        let _ = self.0.send(());
+        Ok(())
+    }
+}
+
+impl windows::Win32::System::Com::IAgileObject_Impl for ActivateDone_Impl {}
+
+/// Клиент захвата звука процесса вместе с дочерними (`PROCESS_LOOPBACK`, Windows 10 2004+).
+pub fn process_loopback_client(pid: u32) -> windows::core::Result<IAudioClient> {
+    use windows::Win32::Foundation::E_FAIL;
+    use windows::Win32::System::Com::BLOB;
+    use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
+    use windows::Win32::System::Variant::VT_BLOB;
+    let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
+        ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+        Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+            ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                TargetProcessId: pid,
+                ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+            },
+        },
+    };
+    // PROPVARIANT ссылается на `params` на стеке: живёт до конца активации, PropVariantClear не нужен.
+    let mut pv = std::mem::ManuallyDrop::new(PROPVARIANT::default());
+    // SAFETY: заполнение объединения PROPVARIANT как VT_BLOB; асинхронная операция ждётся здесь же.
+    unsafe {
+        let inner = &mut pv.Anonymous.Anonymous;
+        inner.vt = VT_BLOB;
+        inner.Anonymous.blob =
+            BLOB { cbSize: size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32, pBlobData: (&raw mut params).cast() };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handler: IActivateAudioInterfaceCompletionHandler = ActivateDone(tx).into();
+        let op = ActivateAudioInterfaceAsync(
+            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+            &IAudioClient::IID,
+            Some(&*pv),
+            &handler,
+        )?;
+        rx.recv_timeout(Duration::from_secs(5)).map_err(|_| windows::core::Error::from(E_FAIL))?;
+        let mut hr = windows::core::HRESULT(0);
+        let mut unk: Option<windows::core::IUnknown> = None;
+        op.GetActivateResult(&mut hr, &mut unk)?;
+        hr.ok()?;
+        unk.ok_or_else(|| windows::core::Error::from(E_FAIL))?.cast()
+    }
+}
+
+/// Корневой процесс приложения по имени exe: у браузеров и лаунчеров процессов с одним именем
+/// много, захват идёт по дереву от того, чей родитель — другой процесс.
+fn find_app_pid(exe: &str) -> Option<u32> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::*;
+    let mut found: Vec<(u32, u32)> = Vec::new();
+    // SAFETY: снимок процессов; дескриптор закрывается здесь же.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+        let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut ok = Process32FirstW(snap, &mut e).is_ok();
+        while ok {
+            let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+            if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case(exe) {
+                found.push((e.th32ProcessID, e.th32ParentProcessID));
+            }
+            ok = Process32NextW(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+    }
+    found.iter().find(|(_, parent)| !found.iter().any(|(p, _)| p == parent)).or(found.first()).map(|(pid, _)| *pid)
+}
+
+/// Имя exe процесса.
+fn process_exe(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::*;
+    // SAFETY: дескриптор процесса только для запроса имени, закрывается здесь же.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let r = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len);
+        let _ = CloseHandle(h);
+        r.ok()?;
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        path.rsplit(['\\', '/']).next().map(str::to_owned)
+    }
+}
+
+/// Процесс ещё работает.
+fn process_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::*;
+    // SAFETY: дескриптор процесса только для кода завершения, закрывается здесь же.
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let mut code = 0u32;
+        let r = GetExitCodeProcess(h, &mut code);
+        let _ = CloseHandle(h);
+        r.is_ok() && code == STILL_ACTIVE.0 as u32
+    }
+}
+
+/// Приложение, которое сейчас выводит звук.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppInfo {
+    pub exe: String,
+    pub pid: u32,
+}
+
+/// Приложения со звуковыми сессиями на устройстве вывода по умолчанию (как в микшере громкости
+/// Windows), без самой программы и системных звуков.
+pub fn audio_apps() -> Vec<AppInfo> {
+    com_init();
+    let own = std::process::id();
+    let mut out: Vec<AppInfo> = Vec::new();
+    let Ok(en) = enumerator() else { return out };
+    // SAFETY: COM-вызовы менеджера сессий.
+    unsafe {
+        let Ok(dev) = en.GetDefaultAudioEndpoint(eRender, eConsole) else { return out };
+        let Ok(mgr) = dev.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else { return out };
+        let Ok(list) = mgr.GetSessionEnumerator() else { return out };
+        for i in 0..list.GetCount().unwrap_or(0) {
+            let Ok(pid) =
+                list.GetSession(i).and_then(|s| s.cast::<IAudioSessionControl2>()).and_then(|s| s.GetProcessId())
+            else {
+                continue;
+            };
+            if pid == 0 || pid == own {
+                continue;
+            }
+            if let Some(exe) = process_exe(pid)
+                && !out.iter().any(|a| a.exe.eq_ignore_ascii_case(&exe))
+            {
+                out.push(AppInfo { exe, pid });
+            }
+        }
+    }
+    out.sort_by_key(|a| a.exe.to_lowercase());
+    out
 }
 
 impl Stream {
@@ -260,8 +454,20 @@ pub fn spawn(
                     }
                 }
             }
+            // Приложение закрылось — канал ждёт его нового запуска.
+            if direction == Direction::App && last_check.elapsed() >= Duration::from_secs(2) {
+                last_check = Instant::now();
+                if let Some(pid) = stream.as_ref().and_then(|s| s.device_id.parse::<u32>().ok())
+                    && !process_alive(pid)
+                {
+                    tracing::info!("аудио App: процесс {pid} завершился, ждём нового запуска");
+                    stream = None;
+                    *shared.device_name.lock() = None;
+                    retry_at = Instant::now() + Duration::from_secs(2);
+                }
+            }
             // Следование за устройством по умолчанию.
-            if device.is_none() && last_check.elapsed() >= Duration::from_secs(2) {
+            if direction != Direction::App && device.is_none() && last_check.elapsed() >= Duration::from_secs(2) {
                 last_check = Instant::now();
                 let current = stream.as_ref().map(|s| s.device_id.clone());
                 if let Some(def) = default_device(direction)

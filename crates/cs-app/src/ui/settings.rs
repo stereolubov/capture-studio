@@ -51,7 +51,22 @@ pub struct SettingsDialog {
     capturing: Option<String>,
     /// Измеренная высота панели (для центрирования и скриншотов).
     pub last_height: f32,
+    /// Списки устройств (читаются при первом показе вкладки «Аудио»).
+    devices: Option<AudioDevices>,
+    /// Приложения со звуком и время последнего опроса.
+    apps: Option<(std::time::Instant, Vec<cs_audio::wasapi::AppInfo>)>,
 }
+
+/// Устройства вывода и ввода для выпадающих списков.
+struct AudioDevices {
+    render: Vec<cs_audio::wasapi::DeviceInfo>,
+    capture: Vec<cs_audio::wasapi::DeviceInfo>,
+}
+
+/// Звук приложения (process loopback) — с Windows 10 2004 (сборка 19041), §2.
+const APP_AUDIO_MIN_BUILD: u32 = 19041;
+/// Каналов микшера не больше (поля смещения синхронизации и место в микшере).
+const MAX_CHANNELS: usize = 8;
 
 impl SettingsDialog {
     pub fn new(app: &App, tab: SettingsTab) -> Self {
@@ -66,6 +81,8 @@ impl SettingsDialog {
             hotkey_search: String::new(),
             capturing: None,
             last_height: 425.0,
+            devices: None,
+            apps: None,
         }
     }
 }
@@ -299,6 +316,29 @@ impl Form {
             theme::mono(theme::TEXT_SMALL),
             self.p.mute,
         );
+    }
+
+    /// Поле-меню: показывает `value`, по щелчку — список действий. Возвращает выбранное.
+    fn menu(&mut self, ui: &mut Ui, id: &str, label: &str, value: &str, items: &[String]) -> Option<usize> {
+        let rect = self.row(label);
+        let resp = w::hit(ui, rect, ("menu", id), Sense::click());
+        if resp.hovered() {
+            self.painter.rect_filled(rect.shrink(1.0), 3.0, self.p.hover);
+        }
+        self.value(rect, value, "▾", true);
+        let mut chosen = None;
+        let p = self.p;
+        egui::Popup::menu(&resp).width(rect.width()).gap(2.0).show(|ui| {
+            ui.set_min_width(rect.width() - 12.0);
+            for (i, o) in items.iter().enumerate() {
+                let text = egui::RichText::new(o).font(theme::mono(theme::TEXT_SMALL)).color(p.fg);
+                if ui.selectable_label(false, text).clicked() {
+                    chosen = Some(i);
+                    ui.close();
+                }
+            }
+        });
+        chosen
     }
 
     /// Выпадающий список. Возвращает `true`, если значение изменилось.
@@ -591,18 +631,84 @@ fn output_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form, live
 }
 
 fn audio_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
+    use cs_audio::wasapi::{self, Direction};
+    use cs_core::config::profile::{AudioChannelKind, AudioChannelSettings};
     let t = |k: &str| app.i18n.t(k);
     let rates = [48_000u32, 44_100];
     let mut sel = index_of(&rates, d.profile.audio.sample_rate);
     if f.dropdown(ui, "rate", &t("field-sample-rate"), &["48 kHz".into(), "44.1 kHz".into()], &mut sel, true) {
         d.profile.audio.sample_rate = rates[sel];
     }
-    let dflt = [t("device-default")];
-    for (id, key) in
-        [("dev-desk", "field-desktop-device"), ("dev-mic", "field-mic-device"), ("dev-mon", "field-monitor-device")]
-    {
-        let mut sel = 0;
-        f.dropdown(ui, id, &t(key), &dflt, &mut sel, true);
+    // Устройства: «По умолчанию» (со следованием за сменой) или конкретное по id.
+    let devices = d.devices.get_or_insert_with(|| AudioDevices {
+        render: wasapi::devices(Direction::Render),
+        capture: wasapi::devices(Direction::Capture),
+    });
+    let (render, capture) = (devices.render.clone(), devices.capture.clone());
+    let a = &mut d.profile.audio;
+    for (id, key, list, value) in [
+        ("dev-desk", "field-desktop-device", &render, &mut a.desktop_device),
+        ("dev-mic", "field-mic-device", &capture, &mut a.mic_device),
+        ("dev-mon", "field-monitor-device", &render, &mut a.monitoring_device),
+    ] {
+        let mut names = vec![t("device-default")];
+        names.extend(list.iter().map(|x| x.name.clone()));
+        // Сохранённое устройство сейчас не подключено — показываем его отдельной строкой.
+        let missing = value.as_ref().filter(|v| !list.iter().any(|x| &x.id == *v)).cloned();
+        if missing.is_some() {
+            names.push(t("device-missing"));
+        }
+        let mut sel = match value {
+            None => 0,
+            Some(v) => list.iter().position(|x| &x.id == v).map_or(names.len() - 1, |i| i + 1),
+        };
+        if f.dropdown(ui, id, &t(key), &names, &mut sel, true) {
+            *value = if sel == 0 { None } else { list.get(sel - 1).map(|x| x.id.clone()).or(missing) };
+        }
+    }
+
+    // Звук приложений (§8.1): каналы process loopback по имени exe.
+    if crate::platform::system::os_build() >= APP_AUDIO_MIN_BUILD {
+        f.caption(&t("audio-apps"));
+        let mut remove = None;
+        for (i, ch) in d.profile.audio.channels.iter().enumerate().filter(|(_, c)| c.kind == AudioChannelKind::App) {
+            let exe = ch.app.clone().unwrap_or_default();
+            if f.menu(ui, &format!("app{i}"), &ch.name, &exe, &[t("audio-app-remove")]).is_some() {
+                remove = Some(i);
+            }
+        }
+        if let Some(i) = remove {
+            d.profile.audio.channels.remove(i);
+        }
+        if d.profile.audio.channels.len() < MAX_CHANNELS {
+            // Список приложений со звуком обновляется раз в 2 с, пока вкладка открыта.
+            if d.apps.as_ref().is_none_or(|(at, _)| at.elapsed() >= std::time::Duration::from_secs(2)) {
+                d.apps = Some((std::time::Instant::now(), wasapi::audio_apps()));
+            }
+            let added: Vec<String> = d.profile.audio.channels.iter().filter_map(|c| c.app.clone()).collect();
+            let apps: Vec<_> = d.apps.as_ref().map_or_else(Vec::new, |(_, a)| {
+                a.iter().filter(|x| !added.iter().any(|e| e.eq_ignore_ascii_case(&x.exe))).cloned().collect()
+            });
+            let items: Vec<String> = if apps.is_empty() {
+                vec![t("audio-apps-none")]
+            } else {
+                apps.iter().map(|x| format!("{} · {}", wasapi::app_title(&x.exe), x.exe)).collect()
+            };
+            if let Some(i) = f.menu(ui, "app-add", &t("audio-app-add"), &t("audio-app-choose"), &items)
+                && let Some(x) = apps.get(i)
+            {
+                d.profile.audio.channels.push(AudioChannelSettings {
+                    name: wasapi::app_title(&x.exe),
+                    kind: AudioChannelKind::App,
+                    fader_db: 0.0,
+                    muted: false,
+                    tracks: 0b1,
+                    sync_offset_ms: 0,
+                    filters: Vec::new(),
+                    app: Some(x.exe.clone()),
+                });
+            }
+        }
     }
     // Смещение синхронизации каналов (§8.2): «+» — звук канала позже картинки.
     const IDS: [&str; 8] = ["sync0", "sync1", "sync2", "sync3", "sync4", "sync5", "sync6", "sync7"];

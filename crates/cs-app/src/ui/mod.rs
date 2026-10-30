@@ -426,6 +426,8 @@ pub enum Screen {
     Source,
     /// Главное окно с открытым окном фильтров микрофона.
     Filters,
+    /// Настройки, вкладка «Аудио» (устройства этой машины — не для эталонов).
+    SettingsAudio,
 }
 
 impl Screen {
@@ -438,6 +440,7 @@ impl Screen {
             "1f" | "mini" => Self::Mini,
             "source" => Self::Source,
             "filters" => Self::Filters,
+            "settings-audio" => Self::SettingsAudio,
             _ => return None,
         })
     }
@@ -449,7 +452,7 @@ impl App {
         match screen {
             // Рамка 1 px снаружи сетки 1280×760, как в дизайн-макете.
             Screen::Main => Vec2::new(1282.0, 762.0),
-            Screen::Settings => settings::panel_size(self, ctx),
+            Screen::Settings | Screen::SettingsAudio => settings::panel_size(self, ctx),
             Screen::Mixer => mixer::panel_size(self, ctx),
             Screen::Stats => stats::panel_size(self, ctx),
             Screen::Mini => mini::SIZE,
@@ -466,6 +469,16 @@ impl App {
             Screen::Settings => {
                 let mut d = settings::SettingsDialog::new(self, SettingsTab::Output);
                 settings::draw_panel(self, ui, &mut d, rect);
+            }
+            Screen::SettingsAudio => {
+                // Диалог живёт между проходами: по нему меряется высота панели.
+                let mut d = self
+                    .overlays
+                    .settings
+                    .take()
+                    .unwrap_or_else(|| settings::SettingsDialog::new(self, SettingsTab::Audio));
+                settings::draw_panel(self, ui, &mut d, rect);
+                self.overlays.settings = Some(d);
             }
             Screen::Mixer => {
                 let mut m = mixer::MixerUi::new(None);

@@ -20,6 +20,8 @@
 | `image` 0.25 (только `png`, `jpeg`, `webp`) | cs-capture | Декодирование источника «Изображение» (§6.5) | MIT/Apache-2.0 | WIC (системный, но громоздкий COM-API) |
 | `windows-numerics` | cs-gpu | Типы векторов для Direct2D (`DrawTextLayout`) — зависимость `windows` | MIT/Apache-2.0 | — |
 | `png` | cs-app | Запись/чтение PNG для скриншот-тестов | MIT/Apache-2.0 | `image` (тяжелее; понадобится в M1 для источника «Изображение») |
+| `nnnoiseless` 0.5 (без default-фич: без CLI и `dasp`) | cs-audio | Шумоподавление RNNoise (§8.3), чистый Rust, модель встроена (+1.2 МБ exe) | BSD-3-Clause | привязки к C-библиотеке RNNoise (сборка C, `rnnoise-c` устарел) |
+| `windows-core` 0.62 | cs-audio | Макрос `#[implement]` для COM-обработчика `ActivateAudioInterfaceAsync` (звук приложения, §8.1) — та же версия, что у `windows` | MIT/Apache-2.0 | ручная vtable (небезопасно и громоздко) |
 
 **Не используется:** `tracing-appender` — нет ротации по размеру, нужной по §12.1 (ADR-0005).
 `static_assertions` — заменён встроенными `const _: () = assert!(...)` (без зависимости).

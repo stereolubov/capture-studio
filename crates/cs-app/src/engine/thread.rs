@@ -246,6 +246,21 @@ struct Worker {
     disk_warned: bool,
     /// Режим мониторинга по каналам (воспроизведение — позже в M2).
     monitor: Vec<MonitorMode>,
+    /// Каналы работающего аудиодвижка (тип и приложение) — по ним переносятся настройки
+    /// при перезапуске движка.
+    audio_keys: Vec<AudioKey>,
+    /// Состав каналов или устройства изменились во время записи: перезапуск после остановки.
+    audio_restart_pending: bool,
+}
+
+/// Канал движка для сопоставления при перезапуске.
+type AudioKey = (AudioChannelKind, Option<String>);
+
+/// Всё, что требует перезапуска аудиодвижка: устройства и состав каналов.
+fn audio_topology(p: &Profile) -> (Option<String>, Option<String>, Vec<(AudioKey, String)>) {
+    let a = &p.audio;
+    let channels = a.channels.iter().map(|c| ((c.kind, c.app.clone()), c.name.clone())).collect();
+    (a.desktop_device.clone(), a.mic_device.clone(), channels)
 }
 
 /// Запуск аудиодвижка по каналам профиля.
@@ -259,10 +274,12 @@ fn start_audio(profile: &Profile) -> Option<AudioEngine> {
             direction: match c.kind {
                 AudioChannelKind::Desktop => Direction::Render,
                 AudioChannelKind::Mic => Direction::Capture,
+                AudioChannelKind::App => Direction::App,
             },
             device: match c.kind {
                 AudioChannelKind::Desktop => profile.audio.desktop_device.clone(),
                 AudioChannelKind::Mic => profile.audio.mic_device.clone(),
+                AudioChannelKind::App => c.app.clone(),
             },
             control: ChannelControl {
                 fader_db: c.fader_db,
@@ -319,7 +336,11 @@ impl Worker {
         tracing::debug!("движок: {cmd:?}");
         match cmd {
             Command::ApplyProfile(p) => {
+                let topology_changed = audio_topology(&self.profile) != audio_topology(&p);
                 self.profile = *p;
+                if topology_changed {
+                    self.request_audio_restart();
+                }
                 let canvas = canvas_size(&self.profile);
                 if canvas != self.canvas {
                     self.canvas = canvas;
@@ -477,6 +498,52 @@ impl Worker {
     }
 
     /// Готовность запускаемой записи (опрос каждый тик).
+    /// Перезапуск аудиодвижка после смены устройств или состава каналов. Во время записи
+    /// откладывается до её остановки: иначе оборвалась бы звуковая дорожка.
+    fn request_audio_restart(&mut self) {
+        if self.recording.is_some() || self.recording_starting.is_some() {
+            tracing::info!("аудио: изменения каналов применятся после остановки записи");
+            self.audio_restart_pending = true;
+        } else {
+            self.restart_audio();
+        }
+    }
+
+    fn apply_pending_audio_restart(&mut self) {
+        if self.audio_restart_pending && self.recording.is_none() && self.recording_starting.is_none() {
+            self.audio_restart_pending = false;
+            self.restart_audio();
+        }
+    }
+
+    /// Новый аудиодвижок по профилю; у сохранившихся каналов — текущие фейдер, mute, дорожки,
+    /// смещение и фильтры (в профиле диалога настроек они могли устареть).
+    fn restart_audio(&mut self) {
+        if let Some(old) = self.audio.take() {
+            let status = old.status();
+            for c in &mut self.profile.audio.channels {
+                let key = (c.kind, c.app.clone());
+                if let Some(s) = self.audio_keys.iter().position(|k| *k == key).and_then(|i| status.get(i)) {
+                    c.fader_db = s.control.fader_db;
+                    c.muted = s.control.muted;
+                    c.tracks = s.control.tracks;
+                    c.sync_offset_ms = s.control.sync_offset_ms;
+                    c.filters = s.filters.clone();
+                }
+            }
+        }
+        let old_keys = std::mem::take(&mut self.audio_keys);
+        let old_monitor = std::mem::take(&mut self.monitor);
+        self.audio = start_audio(&self.profile);
+        self.audio_keys = self.profile.audio.channels.iter().map(|c| (c.kind, c.app.clone())).collect();
+        self.monitor = self
+            .audio_keys
+            .iter()
+            .map(|k| old_keys.iter().position(|o| o == k).and_then(|i| old_monitor.get(i).copied()).unwrap_or_default())
+            .collect();
+        tracing::info!("аудио: движок перезапущен, каналов {}", self.audio_keys.len());
+    }
+
     fn poll_recording_start(&mut self) {
         let Some(rx) = &self.recording_starting else { return };
         let Ok(result) = rx.try_recv() else { return };
@@ -790,9 +857,12 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
             .join("Videos")
             .join("Capture Studio"),
         monitor: Vec::new(),
+        audio_keys: Vec::new(),
+        audio_restart_pending: false,
     };
     w.audio = start_audio(&w.profile);
     w.monitor = vec![MonitorMode::Off; w.profile.audio.channels.len()];
+    w.audio_keys = w.profile.audio.channels.iter().map(|c| (c.kind, c.app.clone())).collect();
     let ids: Vec<SourceId> = w.editor.collection.sources.keys().copied().collect();
     for id in ids {
         w.create_source(id);
@@ -815,6 +885,7 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         }
         w.apply_pending_fit();
         w.poll_recording_start();
+        w.apply_pending_audio_restart();
         let t1 = Instant::now();
         // Плановое время этого тика: сейчас минус опоздание относительно расписания. Иначе
         // опоздание больше полукадра сдвигает кадр в следующий слот сетки записи, а его слот
