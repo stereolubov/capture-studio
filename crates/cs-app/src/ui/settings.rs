@@ -51,16 +51,8 @@ pub struct SettingsDialog {
     capturing: Option<String>,
     /// Измеренная высота панели (для центрирования и скриншотов).
     pub last_height: f32,
-    /// Списки устройств (читаются при первом показе вкладки «Аудио»).
-    devices: Option<AudioDevices>,
-    /// Приложения со звуком и время последнего опроса.
-    apps: Option<(std::time::Instant, Vec<cs_audio::wasapi::AppInfo>)>,
-}
-
-/// Устройства вывода и ввода для выпадающих списков.
-struct AudioDevices {
-    render: Vec<cs_audio::wasapi::DeviceInfo>,
-    capture: Vec<cs_audio::wasapi::DeviceInfo>,
+    /// Фоновый опрос устройств и приложений (запускается при первом показе вкладки «Аудио»).
+    devices: Option<cs_audio::wasapi::DeviceWatch>,
 }
 
 /// Звук приложения (process loopback) — с Windows 10 2004 (сборка 19041), §2.
@@ -82,7 +74,6 @@ impl SettingsDialog {
             capturing: None,
             last_height: 425.0,
             devices: None,
-            apps: None,
         }
     }
 }
@@ -631,7 +622,7 @@ fn output_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form, live
 }
 
 fn audio_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
-    use cs_audio::wasapi::{self, Direction};
+    use cs_audio::wasapi;
     use cs_core::config::profile::{AudioChannelKind, AudioChannelSettings};
     let t = |k: &str| app.i18n.t(k);
     let rates = [48_000u32, 44_100];
@@ -639,12 +630,10 @@ fn audio_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
     if f.dropdown(ui, "rate", &t("field-sample-rate"), &["48 kHz".into(), "44.1 kHz".into()], &mut sel, true) {
         d.profile.audio.sample_rate = rates[sel];
     }
-    // Устройства: «По умолчанию» (со следованием за сменой) или конкретное по id.
-    let devices = d.devices.get_or_insert_with(|| AudioDevices {
-        render: wasapi::devices(Direction::Render),
-        capture: wasapi::devices(Direction::Capture),
-    });
-    let (render, capture) = (devices.render.clone(), devices.capture.clone());
+    // Устройства: «По умолчанию» (со следованием за сменой) или конкретное по id. Списки
+    // обновляет фоновый поток: подключённое устройство появляется само.
+    let snap = d.devices.get_or_insert_with(wasapi::DeviceWatch::start).snapshot();
+    let (render, capture) = (snap.render.clone(), snap.capture.clone());
     let a = &mut d.profile.audio;
     for (id, key, list, value) in [
         ("dev-desk", "field-desktop-device", &render, &mut a.desktop_device),
@@ -655,7 +644,7 @@ fn audio_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
         names.extend(list.iter().map(|x| x.name.clone()));
         // Сохранённое устройство сейчас не подключено — показываем его отдельной строкой.
         let missing = value.as_ref().filter(|v| !list.iter().any(|x| &x.id == *v)).cloned();
-        if missing.is_some() {
+        if missing.is_some() || (value.is_some() && !snap.ready) {
             names.push(t("device-missing"));
         }
         let mut sel = match value {
@@ -681,14 +670,9 @@ fn audio_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
             d.profile.audio.channels.remove(i);
         }
         if d.profile.audio.channels.len() < MAX_CHANNELS {
-            // Список приложений со звуком обновляется раз в 2 с, пока вкладка открыта.
-            if d.apps.as_ref().is_none_or(|(at, _)| at.elapsed() >= std::time::Duration::from_secs(2)) {
-                d.apps = Some((std::time::Instant::now(), wasapi::audio_apps()));
-            }
             let added: Vec<String> = d.profile.audio.channels.iter().filter_map(|c| c.app.clone()).collect();
-            let apps: Vec<_> = d.apps.as_ref().map_or_else(Vec::new, |(_, a)| {
-                a.iter().filter(|x| !added.iter().any(|e| e.eq_ignore_ascii_case(&x.exe))).cloned().collect()
-            });
+            let apps: Vec<_> =
+                snap.apps.iter().filter(|x| !added.iter().any(|e| e.eq_ignore_ascii_case(&x.exe))).cloned().collect();
             let items: Vec<String> = if apps.is_empty() {
                 vec![t("audio-apps-none")]
             } else {

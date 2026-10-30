@@ -321,6 +321,64 @@ fn process_alive(pid: u32) -> bool {
     }
 }
 
+/// Списки устройств и приложений со звуком.
+#[derive(Debug, Clone, Default)]
+pub struct DeviceSnapshot {
+    pub render: Vec<DeviceInfo>,
+    pub capture: Vec<DeviceInfo>,
+    pub apps: Vec<AppInfo>,
+    /// Первый опрос уже прошёл.
+    pub ready: bool,
+}
+
+/// Фоновый опрос устройств и приложений со звуком раз в 2 с. Перечисление через COM может
+/// подвисать, пока Windows обрабатывает подключение устройства, — окно его не ждёт.
+pub struct DeviceWatch {
+    snapshot: Arc<Mutex<DeviceSnapshot>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl DeviceWatch {
+    pub fn start() -> Self {
+        let snapshot = Arc::new(Mutex::new(DeviceSnapshot::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (snap, st) = (snapshot.clone(), stop.clone());
+        let spawned = std::thread::Builder::new().name("audio-devices".into()).spawn(move || {
+            com_init();
+            while !st.load(Ordering::Acquire) {
+                let fresh = DeviceSnapshot {
+                    render: devices(Direction::Render),
+                    capture: devices(Direction::Capture),
+                    apps: audio_apps(),
+                    ready: true,
+                };
+                *snap.lock() = fresh;
+                for _ in 0..20 {
+                    if st.load(Ordering::Acquire) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::warn!("опрос аудиоустройств не запущен: {e}");
+        }
+        Self { snapshot, stop }
+    }
+
+    pub fn snapshot(&self) -> DeviceSnapshot {
+        self.snapshot.lock().clone()
+    }
+}
+
+impl Drop for DeviceWatch {
+    /// Поток не ждём: если он стоит в COM-вызове, закрытие окна не должно зависать.
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
 /// Приложение, которое сейчас выводит звук.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppInfo {

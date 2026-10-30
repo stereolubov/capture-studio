@@ -877,8 +877,12 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
     let timer = FrameTimer::new();
     let loop_start = Instant::now();
     let mut next = Instant::now();
+    let heartbeat = Arc::new(super::watchdog::Heartbeat::default());
+    let watchdog = super::watchdog::spawn(heartbeat.clone()).ok();
+    use super::watchdog::Stage;
     while !w.shared.shutdown.load(Ordering::Acquire) {
         let interval = Duration::from_secs_f64(1.0 / fps_of(&w.profile));
+        heartbeat.mark(Stage::Commands);
         let t0 = Instant::now();
         for cmd in rx.try_iter().take(64) {
             w.handle(cmd);
@@ -890,13 +894,16 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         // Плановое время этого тика: сейчас минус опоздание относительно расписания. Иначе
         // опоздание больше полукадра сдвигает кадр в следующий слот сетки записи, а его слот
         // пустеет (такие пропуски не видны в счётчике).
+        heartbeat.mark(Stage::Tick);
         let late = t1.saturating_duration_since(next).as_secs_f64();
         let now_ticks = cs_core::clock::Ticks::now();
         w.tick(cs_core::clock::Ticks(now_ticks.0 - (late * cs_core::clock::Ticks::frequency() as f64) as i64));
         let t2 = Instant::now();
+        heartbeat.mark(Stage::Publish);
         w.update_stats(interval);
         w.publish();
         let t3 = Instant::now();
+        heartbeat.mark(Stage::Housekeeping);
         w.check_disk();
         if w.dirty_since.is_some_and(|t| t.elapsed() >= AUTOSAVE_DELAY) {
             w.save_now(true);
@@ -904,6 +911,7 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
 
         // Темп холста: если тик опоздал больше чем на кадр — кадры считаются пропущенными
         // (метрика «пропущено (рендер)», §7.3), расписание выравнивается.
+        heartbeat.mark(Stage::Sleep);
         next += interval;
         let now = Instant::now();
         if now > next + interval {
@@ -923,6 +931,10 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         } else if next > now {
             timer.sleep(next - now);
         }
+    }
+    heartbeat.stop();
+    if let Some(t) = watchdog {
+        let _ = t.join();
     }
     if let Some(r) = w.recording.take() {
         // Выход во время записи: файл финализируется до завершения процесса (§15).

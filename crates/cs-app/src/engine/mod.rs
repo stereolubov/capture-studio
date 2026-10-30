@@ -8,6 +8,7 @@
 mod recording;
 mod scene_ops;
 mod thread;
+mod watchdog;
 
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use cs_core::config::Profile;

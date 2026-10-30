@@ -166,6 +166,7 @@ impl App {
 
     /// Открыть окно настроек на вкладке.
     pub fn open_settings(&mut self, tab: SettingsTab) {
+        tracing::info!("окно: настройки ({tab:?})");
         self.overlays.settings = Some(settings::SettingsDialog::new(self, tab));
     }
 
@@ -192,6 +193,7 @@ impl App {
 
     /// Окно фильтров канала (§8.3).
     pub fn open_filters(&mut self, channel: usize) {
+        tracing::info!("окно: фильтры канала {channel}");
         self.overlays.filters = Some(filters::FiltersUi::new(channel));
     }
 
@@ -358,6 +360,8 @@ impl App {
             let keep = settings::modal(self, ctx, &mut d, screen);
             if keep && self.overlays.settings.is_none() {
                 self.overlays.settings = Some(d);
+            } else if !keep {
+                tracing::info!("окно: настройки закрыты");
             }
         }
     }
