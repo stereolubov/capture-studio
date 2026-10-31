@@ -655,13 +655,7 @@ fn output_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form, live
     ];
     let enc_names =
         ["encoder-nvenc", "encoder-amf", "encoder-qsv", "encoder-mf", "encoder-software", "encoder-auto"].map(t);
-    // «Авто» показывает энкодер, выбранный пробой (как в дизайне); до конца пробы — NVENC.
     let state = app.engine.state();
-    let shown = if d.profile.output.encoder == EncoderKind::Auto {
-        state.auto_encoder.unwrap_or(EncoderKind::Nvenc)
-    } else {
-        d.profile.output.encoder
-    };
     // Не прошедшие пробу — неактивны с причиной. Программный остаётся доступным: под ним кнопка
     // загрузки OpenH264.
     let disabled: Vec<Option<String>> = encoders
@@ -674,7 +668,9 @@ fn output_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form, live
                 .and_then(|s| s.unavailable.clone())
         })
         .collect();
-    let mut sel = index_of(&encoders, shown);
+    // В списке нужно показывать настройку профиля, а не результат пробы. Иначе при «Авто»
+    // выбранный пробой энкодер подменяет пункт списка на каждом кадре, и Auto нельзя выбрать.
+    let mut sel = index_of(&encoders, d.profile.output.encoder);
     if f.dropdown_with(ui, "encoder", &t("field-encoder"), &enc_names, &disabled, &mut sel, !live) {
         d.profile.output.encoder = encoders[sel];
     }
