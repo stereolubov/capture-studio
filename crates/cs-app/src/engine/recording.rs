@@ -106,6 +106,7 @@ pub struct Recording {
     grid_phase: Option<i64>,
     /// Задержка захвата видео в метках кадров, такты QPC (меняется ступенькой, см. рендер-поток).
     pub capture_lag: Option<i64>,
+    gpu_to_cpu_copies_at_start: u64,
 }
 
 /// Сетка кадров по точной частоте `num/den`. Целая длительность кадра (166 666 × 100 нс
@@ -314,6 +315,7 @@ impl Recording {
             last_frame_index: None,
             grid_phase: None,
             capture_lag: None,
+            gpu_to_cpu_copies_at_start: cs_gpu::gpu_to_cpu_copies(),
             pause,
             pause_started: None,
             remux: cfg.remux,
@@ -394,10 +396,15 @@ impl Recording {
         let threads = std::mem::take(&mut self.threads);
         let (remux, delete_source) = (self.remux, self.delete_source);
         tracing::info!("запись: пропущено энкодером {} кадров", self.stats.dropped_encoder.load(Ordering::Relaxed));
+        let gpu_to_cpu_copies_at_start = self.gpu_to_cpu_copies_at_start;
         let _ = std::thread::Builder::new().name("recording-finish".into()).spawn(move || {
             for t in threads {
                 let _ = t.join();
             }
+            tracing::info!(
+                "запись: копий GPU→CPU {} (за сеанс)",
+                cs_gpu::gpu_to_cpu_copies().saturating_sub(gpu_to_cpu_copies_at_start)
+            );
             tracing::info!("запись завершена: {}", path.display());
             let _ = events.send(Event::RecordingStopped { path: path.display().to_string() });
             if remux {

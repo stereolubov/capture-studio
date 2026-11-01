@@ -123,7 +123,14 @@ pub fn run() -> anyhow_lite::Result<()> {
     let seconds: f64 = arg("--seconds").and_then(|s| s.parse().ok()).unwrap_or(30.0);
     let x: i32 = arg("--x").and_then(|s| s.parse().ok()).unwrap_or(200);
     let y: i32 = arg("--y").and_then(|s| s.parse().ok()).unwrap_or(200);
-    let out = arg("--out").unwrap_or_else(|| "events.json".into());
+    // При запуске из оболочки рабочий каталог может быть не каталогом exe.
+    // Держим журнал рядом с генератором, чтобы его можно было найти после закрытия окна.
+    let out = arg("--out").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("events.json")))
+            .unwrap_or_else(|| "events.json".into())
+    });
 
     let gpu = GpuDevice::new(DriverKind::Hardware)?;
     // SAFETY: создание окна и swapchain для собственного окна; цикл — в этом потоке.

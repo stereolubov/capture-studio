@@ -153,6 +153,7 @@ impl GpuDevice {
             self.device.CreateTexture2D(&desc, None, Some(&mut staging))?;
             let staging = staging.ok_or_else(|| GpuError::NoDevice("staging".into()))?;
             self.context.CopyResource(&staging, &tex.texture);
+            crate::note_gpu_to_cpu_copy();
             let mut m = D3D11_MAPPED_SUBRESOURCE::default();
             self.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
             let row = tex.width as usize * 4;
@@ -181,6 +182,7 @@ impl GpuDevice {
             self.device.CreateTexture2D(&desc, None, Some(&mut staging))?;
             let staging = staging.ok_or_else(|| GpuError::NoDevice("staging".into()))?;
             self.context.CopyResource(&staging, tex);
+            crate::note_gpu_to_cpu_copy();
             let mut m = D3D11_MAPPED_SUBRESOURCE::default();
             self.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
             let pitch = m.RowPitch as usize;

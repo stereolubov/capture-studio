@@ -171,6 +171,7 @@ impl OffscreenTarget {
         // чтение строк в пределах RowPitch.
         unsafe {
             gpu.context.CopyResource(&self.staging, &self.texture);
+            crate::note_gpu_to_cpu_copy();
             let mut m = D3D11_MAPPED_SUBRESOURCE::default();
             gpu.context.Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
             for y in 0..h as usize {

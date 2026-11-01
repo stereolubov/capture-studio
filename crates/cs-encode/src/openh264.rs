@@ -316,6 +316,7 @@ impl OpenH264Encoder {
         // между Map/Unmap.
         unsafe {
             self.context.CopyResource(&self.staging, tex);
+            cs_gpu::note_gpu_to_cpu_copy();
             let mut m = D3D11_MAPPED_SUBRESOURCE::default();
             self.context.Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
             let pitch = m.RowPitch as usize;

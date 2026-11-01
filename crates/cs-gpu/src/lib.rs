@@ -29,6 +29,21 @@ pub use surface::{OffscreenTarget, WindowSurface};
 #[cfg(windows)]
 pub use text::{TextRenderer, TextStyle};
 
+#[cfg(windows)]
+static GPU_TO_CPU_COPIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Число копий текстуры из видеопамяти в staging-ресурс для чтения CPU.
+#[cfg(windows)]
+pub fn gpu_to_cpu_copies() -> u64 {
+    GPU_TO_CPU_COPIES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Отмечает одно чтение текстуры CPU; используется также программным энкодером.
+#[cfg(windows)]
+pub fn note_gpu_to_cpu_copy() {
+    GPU_TO_CPU_COPIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Ошибки GPU-слоя.
 #[derive(Debug, thiserror::Error)]
 pub enum GpuError {
