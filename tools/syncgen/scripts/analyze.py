@@ -1,30 +1,17 @@
 """Ошибка A/V-синхронизации записи относительно журнала эталонного генератора syncgen."""
 import json
-import os
-import subprocess
 import sys
 
 import numpy as np
+from media_timing import decode, match_events
 
-# Папка с ffmpeg/ffprobe: переменная FFMPEG_DIR, иначе — из PATH.
-FF = os.environ.get("FFMPEG_DIR", "")
 # Необязательно: отрезок записи [начало, длительность] в секундах — для длинных файлов.
 path, events_path = sys.argv[1], sys.argv[2]
 seg_start = float(sys.argv[3]) if len(sys.argv) > 3 else None
-seek = ["-ss", sys.argv[3], "-t", sys.argv[4]] if seg_start is not None else []
+duration = float(sys.argv[4]) if seg_start is not None else None
 events = [e for e in json.load(open(events_path, encoding="utf-8")) if e["video_actual"] is not None]
 
-info = json.loads(subprocess.check_output([os.path.join(FF, "ffprobe"), "-v", "error", "-show_streams", "-of", "json", path]))
-a = next(s for s in info["streams"] if s["codec_type"] == "audio")
-a_start = float(a.get("start_time", 0))
-# При разборе отрезка оба потока декодируются с одной точки: начало отсчёта у них общее.
-t0 = seg_start if seg_start is not None else 0.0
-if seg_start is not None:
-    a_start = seg_start
-
-W, H, FPS = 96, 54, 60.0
-raw = subprocess.check_output([os.path.join(FF, "ffmpeg"), "-v", "error", *seek, "-i", path, "-an", "-vf", f"fps=60,scale={W}:{H},format=gray", "-f", "rawvideo", "-"])
-frames = np.frombuffer(raw, np.uint8).reshape(-1, H, W).astype(np.float32)
+frames, video_pts = decode(path, "video", seg_start, duration)
 # Окно генератора почти всё время чёрное и изредка белое: такие пиксели не путаются с другим
 # движением на экране (видео, смена картинок). Если окна не нашлось — самые изменчивые пиксели.
 mask = (np.median(frames, axis=0) < 40) & (frames.max(axis=0) > 200)
@@ -49,35 +36,18 @@ if mask.sum() < 4:
     mask = var >= np.percentile(var, 98)
 lum = frames[:, mask].mean(axis=1)
 thr = lum.min() + (lum.max() - lum.min()) * 0.5
-v_on = np.array([t0 + i / FPS for i in range(1, len(lum)) if lum[i] >= thr and lum[i - 1] < thr])
+v_on = np.array([video_pts[i] for i in range(1, len(lum)) if lum[i] >= thr and lum[i - 1] < thr])
 
-pcm = subprocess.check_output([os.path.join(FF, "ffmpeg"), "-v", "error", *seek, "-i", path, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
-s = np.abs(np.frombuffer(pcm, np.int16).astype(np.float32))
-env = s[: len(s) // 48 * 48].reshape(-1, 48).max(axis=1)
-athr = env.max() * 0.3
-a_on, last = [], -1.0
-for i in range(1, len(env)):
-    t = a_start + i / 1000.0
-    if env[i] >= athr and env[i - 1] < athr and t - last > 0.5:
-        a_on.append(t)
-        last = t
-a_on = np.array(a_on)
+a_on = decode(path, "audio", seg_start, duration)
 
 # Сопоставление вспышек записи с событиями генератора: лучший постоянный сдвиг шкал.
 g = np.array([e["video_actual"] for e in events])
-best = (0, 0.0)
-for gv in g:
-    shift = gv - v_on[0]
-    n = sum(np.min(np.abs(g - (v + shift))) < 0.02 for v in v_on)
-    if n > best[0]:
-        best = (n, shift)
-shift = best[1]
+if len(g) == 0 or len(v_on) == 0 or len(a_on) == 0:
+    raise SystemExit("Недостаточно вспышек/щелчков или событий генератора для замера")
 
 errors, measured, truth = [], [], []
-for v in v_on:
-    j = int(np.argmin(np.abs(g - (v + shift))))
-    if abs(g[j] - (v + shift)) > 0.02 or len(a_on) == 0:
-        continue
+for i, j in match_events(v_on, g):
+    v = v_on[i]
     ta = a_on[int(np.argmin(np.abs(a_on - v)))]
     if abs(ta - v) > 0.3:
         continue

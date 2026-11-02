@@ -179,12 +179,13 @@ fn build_state(
     }
 }
 
-/// Задержка «захват кадра → тик компоновщика» по самому свежему кадру видимого источника
-/// захвата (WGC знает время композиции кадра), если кадр получен не позже 25 мс назад (§5.2 п.4).
+/// Задержка захвата относительно планового тика. Возраст проверяется по текущим часам,
+/// но стоимость компоновки и опоздание потока не должны сдвигать PTS видео назад.
 fn frame_capture_lag(
     sources: &HashMap<SourceId, Box<dyn VideoSource>>,
     c: &SceneCollection,
     now: cs_core::clock::Ticks,
+    scheduled: cs_core::clock::Ticks,
 ) -> Option<f64> {
     let max_age = cs_core::clock::Ticks::frequency() / 40;
     c.active()
@@ -193,7 +194,7 @@ fn frame_capture_lag(
         .filter_map(|i| sources.get(&i.source).and_then(|s| s.frame_time()))
         .filter(|t| t.0 <= now.0 && now.0 - t.0 <= max_age)
         .max()
-        .map(|t| (now.0 - t.0) as f64)
+        .map(|t| (scheduled.0 - t.0) as f64)
 }
 
 /// Элементы сцены для компоновщика (снизу вверх, только видимые и с кадром).
@@ -240,6 +241,7 @@ struct Worker {
     process: ProcessMonitor,
     audio: Option<AudioEngine>,
     recording: Option<Recording>,
+    dropped_render_at_recording_start: u64,
     recording_starting: Option<crossbeam_channel::Receiver<anyhow::Result<Recording>>>,
     cancel_start: bool,
     recordings_dir: PathBuf,
@@ -448,8 +450,11 @@ impl Worker {
                 return;
             }
             Command::StopRecording => {
-                tracing::info!("запись: пропущено рендером {} кадров (за сеанс)", self.stats.dropped_render);
                 if let Some(r) = self.recording.take() {
+                    tracing::info!(
+                        "запись: пропущено рендером {} кадров (за сеанс)",
+                        self.stats.dropped_render.saturating_sub(self.dropped_render_at_recording_start)
+                    );
                     r.stop(self.events.clone(), self.remux_progress.clone());
                 }
                 return;
@@ -630,6 +635,7 @@ impl Worker {
             Ok(r) if self.cancel_start => r.stop(self.events.clone(), self.remux_progress.clone()),
             Ok(r) => {
                 tracing::info!("запись: {}", r.path.display());
+                self.dropped_render_at_recording_start = self.stats.dropped_render;
                 self.recording = Some(r);
                 let _ = self.events.send(Event::RecordingStarted);
             }
@@ -713,7 +719,7 @@ impl Worker {
             tracing::error!("компоновка: {e}");
         }
         let now = cs_core::clock::Ticks::now();
-        if let Some(lag) = frame_capture_lag(&self.sources, &self.editor.collection, now) {
+        if let Some(lag) = frame_capture_lag(&self.sources, &self.editor.collection, now, scheduled) {
             // Средняя задержка захвата: меряется и вне записи, чтобы к старту записи она устоялась.
             self.video_lag = if self.video_lag == 0.0 { lag } else { self.video_lag * 0.95 + lag * 0.05 };
         }
@@ -935,6 +941,7 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         process: ProcessMonitor::new(),
         audio: None,
         recording: None,
+        dropped_render_at_recording_start: 0,
         recording_starting: None,
         cancel_start: false,
         remux_progress: Arc::new(parking_lot::Mutex::new(None)),
@@ -1036,4 +1043,49 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
     }
     let _ = &w.events;
     tracing::info!("рендер-поток остановлен");
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+    use cs_core::clock::Ticks;
+    use cs_core::model::SceneItem;
+
+    struct TimedSource(Ticks);
+    impl VideoSource for TimedSource {
+        fn update(&mut self, _: &GpuDevice) {}
+        fn content(&self) -> Option<Content> {
+            None
+        }
+        fn state(&self) -> SourceState {
+            SourceState::Active
+        }
+        fn frame_time(&self) -> Option<Ticks> {
+            Some(self.0)
+        }
+    }
+
+    #[test]
+    fn render_cost_does_not_change_video_timestamp() {
+        let ms = Ticks::frequency() / 1000;
+        let source = SourceId::new();
+        let sources: HashMap<SourceId, Box<dyn VideoSource>> =
+            HashMap::from([(source, Box::new(TimedSource(Ticks(ms * 100))) as Box<dyn VideoSource>)]);
+        let mut collection = SceneCollection::default();
+        collection.scenes[0].items.push(SceneItem {
+            source,
+            visible: true,
+            locked: false,
+            transform: Default::default(),
+            crop: Default::default(),
+        });
+        let planned = Ticks(ms * 105);
+        let quick = frame_capture_lag(&sources, &collection, Ticks(ms * 106), planned);
+        let slow = frame_capture_lag(&sources, &collection, Ticks(ms * 120), planned);
+        assert_eq!(quick, Some((ms * 5) as f64));
+        assert_eq!(slow, quick, "один и тот же кадр сохраняет PTS при дорогом рендере");
+        assert_eq!(frame_capture_lag(&sources, &collection, Ticks(ms * 130), planned), None);
+        collection.scenes[0].items[0].visible = false;
+        assert_eq!(frame_capture_lag(&sources, &collection, Ticks(ms * 106), planned), None);
+    }
 }

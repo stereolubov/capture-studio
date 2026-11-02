@@ -69,9 +69,13 @@ fn audio_thread(shared: Arc<Shared>) -> windows::core::Result<()> {
         let clock: IAudioClock = client.GetService()?;
         let clock_freq = clock.GetFrequency()?;
         let buffer = client.GetBufferSize()?;
+        // До Start заполняем буфер тишиной: иначе часы устройства успевают пройти
+        // незаписанные отсчёты и written получает случайный сдвиг относительно pos.
+        let _ = render.GetBuffer(buffer)?;
+        render.ReleaseBuffer(buffer, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)?;
         client.Start()?;
         let freq = Ticks::frequency();
-        let mut written: u64 = 0;
+        let mut written: u64 = u64::from(buffer);
         let start = Ticks::now().0;
         let mut last_fill = start;
         while !shared.stop.load(Ordering::Acquire) {
@@ -131,6 +135,8 @@ pub fn run() -> anyhow_lite::Result<()> {
             .and_then(|exe| exe.parent().map(|dir| dir.join("events.json")))
             .unwrap_or_else(|| "events.json".into())
     });
+    // При сбое этого запуска анализатор не должен принять журнал предыдущего за свежий.
+    std::fs::write(&out, "[]")?;
 
     let gpu = GpuDevice::new(DriverKind::Hardware)?;
     // SAFETY: создание окна и swapchain для собственного окна; цикл — в этом потоке.
@@ -260,27 +266,35 @@ pub fn run() -> anyhow_lite::Result<()> {
             let mut st = DXGI_FRAME_STATISTICS::default();
             if swapchain.GetFrameStatistics(&mut st).is_ok() {
                 pending.retain(|&(id, ev)| {
-                    if st.PresentCount >= id {
-                        let shown = st.SyncQPCTime - (i64::from(st.PresentCount - id)) * period;
+                    if st.PresentCount == id {
+                        // SyncQPCTime относится к SyncRefreshCount, а не к PresentCount.
+                        // Число Present не равно числу развёрток: при задержках их нельзя
+                        // подменять друг другом или экстраполировать пропущенный Present.
+                        let shown = presentation_time(&st, period);
                         events[ev].video_actual = Some(secs(shown, start));
                         // Показ позже цели на целое число развёрток — подаём белый кадр раньше.
                         let target = (events[ev].video_target * freq as f64) as i64 + start;
                         let late = ((shown - target) as f64 / period as f64).round() as i64;
                         lead = (lead + late).clamp(1, 6);
                         false
-                    } else {
+                    } else if st.PresentCount < id {
                         true
+                    } else {
+                        eprintln!("syncgen: для события {ev} пропущена точная статистика Present {id}");
+                        missed += 1;
+                        false
                     }
                 });
             }
         }
     }
     shared.stop.store(true, Ordering::Release);
-    let _ = audio.join();
+    let audio_result = audio.join().map_err(|_| "поток аудио генератора аварийно завершился");
     // SAFETY: закрытие собственного окна.
     unsafe {
         let _ = DestroyWindow(hwnd);
     }
+    audio_result??;
 
     let mut json = String::from("[\n");
     for (i, e) in events.iter().enumerate() {
@@ -303,7 +317,36 @@ pub fn run() -> anyhow_lite::Result<()> {
     Ok(())
 }
 
+fn presentation_time(st: &DXGI_FRAME_STATISTICS, period: i64) -> i64 {
+    let refresh_delta = st.PresentRefreshCount.wrapping_sub(st.SyncRefreshCount) as i32;
+    st.SyncQPCTime + i64::from(refresh_delta) * period
+}
+
 /// Минимальный тип ошибки без внешних зависимостей.
 mod anyhow_lite {
     pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_time_uses_refresh_counts_not_present_count() {
+        let mut st = DXGI_FRAME_STATISTICS {
+            PresentCount: 70,
+            PresentRefreshCount: 100,
+            SyncRefreshCount: 102,
+            SyncQPCTime: 10_000,
+            ..Default::default()
+        };
+        assert_eq!(presentation_time(&st, 100), 9_800);
+        st.PresentCount += 10;
+        assert_eq!(presentation_time(&st, 100), 9_800);
+        st.PresentRefreshCount = 104;
+        assert_eq!(presentation_time(&st, 100), 10_200);
+        st.PresentRefreshCount = 1;
+        st.SyncRefreshCount = u32::MAX;
+        assert_eq!(presentation_time(&st, 100), 10_200);
+    }
 }

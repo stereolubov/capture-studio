@@ -34,8 +34,9 @@ streaming — "like OBS, but light, fast and clear at first glance". *Capture St
   Cisco OpenH264 download; encoder probing and automatic selection.
 - MKV, MP4 remux and fragmented MP4 recording, AAC and MKV-only Opus, separate audio tracks, pause,
   free-space checks, scaling and 10-bit P010 conversion.
-- Final M2 acceptance is still pending: a one-hour run against the acceptance limits and field validation
-  of AMF/QSV on AMD/Intel hardware. Live streaming is not implemented yet.
+- M2 acceptance: the first one-hour 1080p60 run had no dropped frames and CPU stayed below 0.7%.
+  A/V validation is being repeated after timing-tool corrections; AMD is partially tested and Intel is
+  untested. See the [acceptance report](docs/reports/M2.md). Live streaming is not implemented yet.
 
 Measured on M1 acceptance (1080p60 canvas, 4K display capture): 60.0 fps with 0 dropped frames,
 0.02 ms GPU composition time, 0.1% CPU, 66 MB RAM.
