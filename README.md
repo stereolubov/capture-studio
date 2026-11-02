@@ -6,7 +6,8 @@ A lightweight native Windows app written in Rust for screen and game capture, re
 streaming — "like OBS, but light, fast and clear at first glance". *Capture Studio* is a working title.
 
 > **Status: early development.** M0 and M1 are complete. The M2 audio, encoding and recording
-> features are implemented; final acceptance and validation on AMD and Intel systems are in progress.
+> features are implemented; local NVIDIA acceptance has passed with manual audio calibration.
+> AMD is partially tested and Intel is untested.
 > Live streaming is planned for M3, game capture for M4. See the [roadmap](docs/PLAN.md).
 
 ## Goals
@@ -18,7 +19,7 @@ streaming — "like OBS, but light, fast and clear at first glance". *Capture St
 - **Light.** ~5 MB executable, starts in under a second, low RAM/CPU use.
 - **Minimal but informative UI.** Everything important about the stream is visible at a glance.
 
-## Features implemented (M0–M2; M2 acceptance in progress)
+## Features implemented (M0–M2; NVIDIA acceptance completed with calibration)
 
 - Borderless window with Windows 11 Snap Layouts, per-monitor DPI, dark/light/system themes, RU/EN.
 - D3D11 compositor rendered on a high-resolution timer thread; fade/cut transitions; GPU timing.
@@ -34,9 +35,11 @@ streaming — "like OBS, but light, fast and clear at first glance". *Capture St
   Cisco OpenH264 download; encoder probing and automatic selection.
 - MKV, MP4 remux and fragmented MP4 recording, AAC and MKV-only Opus, separate audio tracks, pause,
   free-space checks, scaling and 10-bit P010 conversion.
-- M2 acceptance: the first one-hour 1080p60 run had no dropped frames and CPU stayed below 0.7%.
-  A/V validation is being repeated after timing-tool corrections; AMD is partially tested and Intel is
-  untested. See the [acceptance report](docs/reports/M2.md). Live streaming is not implemented yet.
+- M2 local NVIDIA acceptance: 1:00:32 at 1080p60, CPU ≤0.6%, 160–162 MB RAM, zero instrumented
+  GPU→CPU copies, one render drop and no encoder drops. After a desktop audio offset of −10 ms,
+  all 54 measured A/V events at the start/end were within ±20 ms. This calibration is specific to the
+  test system. AMD is partially tested; Intel is untested. See the [report and coverage limits](docs/reports/M2.md).
+  Live streaming is not implemented yet.
 
 Measured on M1 acceptance (1080p60 canvas, 4K display capture): 60.0 fps with 0 dropped frames,
 0.02 ms GPU composition time, 0.1% CPU, 66 MB RAM.
