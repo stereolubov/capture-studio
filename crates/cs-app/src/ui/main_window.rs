@@ -507,7 +507,7 @@ fn right_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
     }
     let (label, kind, enabled) = match &st.stream {
         OutputStatus::Idle | OutputStatus::Error(_) => (app.i18n.t("btn-start-stream"), ButtonKind::Outline, true),
-        OutputStatus::Starting => (app.i18n.t("btn-connecting"), ButtonKind::Outline, false),
+        OutputStatus::Starting => (app.i18n.t("btn-stop-stream"), ButtonKind::Outline, true),
         OutputStatus::Live | OutputStatus::Reconnecting { .. } => {
             let key = if app.main.stop_armed.is_some() { "btn-confirm-stop" } else { "btn-stop-stream" };
             (app.i18n.t(key), ButtonKind::Live, true)
@@ -515,16 +515,13 @@ fn right_panel(app: &mut App, ui: &mut Ui, p: &Palette, r: Rect) {
         OutputStatus::Stopping => (app.i18n.t("btn-stopping"), ButtonKind::Live, false),
     };
     if w::button(ui, stream_rect, "btn-stream", &label, kind, enabled, p).clicked() {
-        if st.stream.is_active() {
+        if st.stream.is_active() || st.stream == OutputStatus::Starting {
             if app.settings.confirm_stop_stream && app.main.stop_armed.is_none() {
                 app.main.stop_armed = Some(now);
             } else {
                 app.main.stop_armed = None;
                 app.send(Command::StopStream);
             }
-        } else if st.live_engine {
-            let msg = app.i18n.t("stream-later");
-            app.toast(msg);
         } else {
             app.send(Command::StartStream);
         }

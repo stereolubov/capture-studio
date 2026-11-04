@@ -1,6 +1,55 @@
 //! Глобальные горячие клавиши (§13): `RegisterHotKey` — работают при фокусе в игре.
 //! Сочетания, недоступные через `RegisterHotKey`, и push-to-talk (`WH_KEYBOARD_LL`) — M3.
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Scene(usize),
+    Stream,
+    Record,
+    Pause,
+    MuteMic,
+    Mini,
+}
+impl Action {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "stream.toggle" => Self::Stream,
+            "record.toggle" => Self::Record,
+            "record.pause" => Self::Pause,
+            "mic.mute" => Self::MuteMic,
+            "view.mini" => Self::Mini,
+            _ => {
+                let n = name.strip_prefix("scene.")?.parse::<usize>().ok()?;
+                if !(1..=99).contains(&n) {
+                    return None;
+                }
+                Self::Scene(n - 1)
+            }
+        })
+    }
+    pub fn id(self) -> i32 {
+        match self {
+            Self::Scene(n) => n as i32 + 1,
+            Self::Stream => 100,
+            Self::Record => 101,
+            Self::Pause => 102,
+            Self::MuteMic => 103,
+            Self::Mini => 104,
+        }
+    }
+    pub fn from_id(id: i32) -> Option<Self> {
+        Some(match id {
+            1..=99 => Self::Scene((id - 1) as usize),
+            100 => Self::Stream,
+            101 => Self::Record,
+            102 => Self::Pause,
+            103 => Self::MuteMic,
+            104 => Self::Mini,
+            _ => return None,
+        })
+    }
+}
+
 /// Сочетание клавиш в текстовом виде профиля: `Ctrl+Shift+F1`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Hotkey {
@@ -35,6 +84,26 @@ impl Hotkey {
     /// Виртуальный код клавиши Windows: F1–F24, A–Z, 0–9.
     pub fn virtual_key(&self) -> Option<u32> {
         let k = self.key.to_ascii_uppercase();
+        let named = match k.as_str() {
+            "SPACE" => Some(0x20),
+            "ENTER" => Some(0x0d),
+            "TAB" => Some(9),
+            "BACKSPACE" => Some(8),
+            "INSERT" => Some(0x2d),
+            "DELETE" => Some(0x2e),
+            "HOME" => Some(0x24),
+            "END" => Some(0x23),
+            "PAGEUP" => Some(0x21),
+            "PAGEDOWN" => Some(0x22),
+            "ARROWLEFT" => Some(0x25),
+            "ARROWRIGHT" => Some(0x27),
+            "ARROWUP" => Some(0x26),
+            "ARROWDOWN" => Some(0x28),
+            _ => None,
+        };
+        if named.is_some() {
+            return named;
+        }
         if let Some(n) = k.strip_prefix('F').and_then(|n| n.parse::<u32>().ok())
             && (1..=24).contains(&n)
         {
@@ -114,6 +183,18 @@ mod tests {
         assert_eq!(vk("Ctrl+K"), Some(u32::from(b'K')));
         assert_eq!(vk("7"), Some(u32::from(b'7')));
         assert_eq!(vk("F25"), None);
-        assert_eq!(vk("Space"), None);
+        assert_eq!(vk("Space"), Some(0x20));
+        assert_eq!(vk("Ctrl+ArrowLeft"), Some(0x25));
+    }
+
+    #[test]
+    fn actions_preserve_scene_ids_and_route_output_controls() {
+        for name in ["scene.1", "scene.99", "stream.toggle", "record.toggle", "record.pause", "mic.mute", "view.mini"] {
+            let action = Action::from_name(name).expect("action");
+            assert_eq!(Action::from_id(action.id()), Some(action));
+        }
+        for unknown in ["scene.0", "scene.100", "mic.ptt", "other"] {
+            assert!(Action::from_name(unknown).is_none());
+        }
     }
 }

@@ -12,6 +12,9 @@ release builds.
 
 | Component | Authors | License | Used for |
 |---|---|---|---|
+| [native-tls](https://github.com/rust-native-tls/rust-native-tls), [schannel](https://github.com/steffengy/schannel-rs) | Steven Fackler, Steffen Butzer and contributors | MIT OR Apache-2.0 | RTMPS using Windows SChannel |
+| [url](https://github.com/servo/rust-url) | The rust-url developers | MIT OR Apache-2.0 | Stream server URL parsing |
+| [getrandom](https://github.com/rust-random/getrandom) | The Rand Project Developers and contributors | MIT OR Apache-2.0 | OS randomness for RTMP handshakes |
 | [egui](https://github.com/emilk/egui) | Emil Ernerfeldt and contributors | MIT OR Apache-2.0 | User interface |
 | [windows-rs](https://github.com/microsoft/windows-rs) (`windows`, `windows-core`, `windows-sys`, `windows-numerics`) | Microsoft | MIT OR Apache-2.0 | Windows API: Direct3D 11, DXGI, WASAPI, Media Foundation |
 | [rubato](https://github.com/HEnquist/rubato), [audioadapter-buffers](https://github.com/HEnquist/audioadapter-buffers-rs) | Henrik Enquist | MIT OR Apache-2.0 | Audio resampling and clock-drift compensation |

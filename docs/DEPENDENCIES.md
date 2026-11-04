@@ -14,6 +14,9 @@
 | `serde` | cs-core | Сериализация конфигов | MIT/Apache-2.0 | — |
 | `toml` 1.x | cs-core | Формат конфигов (§12.2) | MIT/Apache-2.0 | — |
 | `thiserror` | библиотеки | Типизированные ошибки (§15) | MIT/Apache-2.0 | ручные `impl Error` |
+| `native-tls` 0.2, `schannel` (транзитивно на Windows) | cs-output | RTMPS через системный TLS, проверка сертификата и имени; ADR-0016 | MIT/Apache-2.0 | rustls + отдельные CA/криптопровайдер |
+| `url` 2 | cs-output | Проверяемый разбор RTMP/RTMPS URL, IPv6, порта и приложения | MIT/Apache-2.0 | самописный URL-парсер |
+| `getrandom` 0.4 | cs-output | Случайные байты RTMP-рукопожатия из ОС | MIT/Apache-2.0 | прямой BCryptGenRandom |
 | `anyhow` | cs-app | Ошибки верхнего уровня (§15) | MIT/Apache-2.0 | — |
 | `tracing`, `tracing-subscriber` (fmt) | cs-diag и др. | Логи (§14.2) | MIT | `log` + `env_logger` |
 | `parking_lot` | cs-core | `RwLock` для `AppState` (§5.2 п.6) — подготовка к M1 | MIT/Apache-2.0 | `std::sync` |

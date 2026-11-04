@@ -46,6 +46,8 @@ pub struct SettingsDialog {
     /// Буферы текстовых полей (по id поля).
     buffers: HashMap<&'static str, String>,
     stream_key: String,
+    original_stream_key: String,
+    services: cs_core::services::Catalog,
     show_key: bool,
     advanced: bool,
     hotkey_search: String,
@@ -70,12 +72,22 @@ impl SettingsDialog {
     }
 
     pub fn new(app: &App, tab: SettingsTab) -> Self {
+        let stream_key = app
+            .profile
+            .stream
+            .key_ref
+            .as_deref()
+            .and_then(|r| cs_core::credentials::load(r).ok().flatten())
+            .unwrap_or_default();
         Self {
             tab,
             settings: app.settings.clone(),
             profile: app.profile.clone(),
             buffers: HashMap::new(),
-            stream_key: String::new(),
+            original_stream_key: stream_key.clone(),
+            stream_key,
+            services: cs_core::services::Catalog::installed()
+                .unwrap_or_else(|_| cs_core::services::Catalog::load(None).expect("bundled service catalog")),
             show_key: false,
             advanced: false,
             hotkey_search: String::new(),
@@ -214,8 +226,7 @@ pub fn draw_panel(app: &mut App, ui: &mut Ui, d: &mut SettingsDialog, rect: Rect
         keep = false;
     }
     if w::button(ui, apply, "settings-apply", &apply_label, ButtonKind::Primary, true, &p).clicked() {
-        apply_changes(app, d);
-        keep = false;
+        keep = !apply_changes(app, d);
     }
     if d.tab == SettingsTab::Output {
         let label = format!("{} {}", app.i18n.t("settings-advanced"), if d.advanced { "▾" } else { "▸" });
@@ -238,10 +249,24 @@ pub fn draw_panel(app: &mut App, ui: &mut Ui, d: &mut SettingsDialog, rect: Rect
     keep
 }
 
-fn apply_changes(app: &mut App, d: &SettingsDialog) {
+fn apply_changes(app: &mut App, d: &SettingsDialog) -> bool {
+    let mut profile = d.profile.clone();
+    if d.stream_key != d.original_stream_key {
+        if d.stream_key.is_empty() {
+            // Detach the reference; do not delete a credential potentially shared by a profile copy.
+            profile.stream.key_ref = None;
+        } else {
+            let reference = cs_core::credentials::new_reference();
+            if let Err(e) = cs_core::credentials::save(&reference, &d.stream_key) {
+                app.toast(app.i18n.t_args("settings-save-failed", &[("err", s(e.to_string()))]));
+                return false;
+            }
+            profile.stream.key_ref = Some(reference);
+        }
+    }
     app.settings = d.settings.clone();
-    app.profile = d.profile.clone();
-    app.send(Command::ApplyProfile(Box::new(d.profile.clone())));
+    app.profile = profile.clone();
+    app.send(Command::ApplyProfile(Box::new(profile)));
     let offsets: Vec<(usize, i32)> = d.profile.audio.channels.iter().map(|c| c.sync_offset_ms).enumerate().collect();
     for (channel, ms) in offsets {
         if app.engine.state().audio.get(channel).is_some_and(|c| c.sync_offset_ms != ms) {
@@ -255,6 +280,7 @@ fn apply_changes(app: &mut App, d: &SettingsDialog) {
         Err(e) => app.i18n.t_args("settings-save-failed", &[("err", s(e))]),
     };
     app.toast(msg);
+    true
 }
 
 /// Помощник раскладки полей.
@@ -577,18 +603,15 @@ fn general_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
     }
 }
 
-const SERVICES: [&str; 7] = ["twitch", "youtube", "vk", "rutube", "kick", "trovo", "custom"];
-
 fn stream_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
     let t = |k: &str| app.i18n.t(k);
-    let names: Vec<String> = ["Twitch", "YouTube", "VK Видео Live", "Rutube", "Kick", "Trovo"]
-        .iter()
-        .map(|s| (*s).to_owned())
-        .chain(std::iter::once(t("service-custom")))
-        .collect();
-    let mut sel = index_of(&SERVICES, d.profile.stream.service.as_str());
+    let services: Vec<_> = d.services.service.iter().filter(|s| s.verified).collect();
+    let names: Vec<_> =
+        services.iter().map(|s| if s.id == "custom" { t("service-custom") } else { s.name.clone() }).collect();
+    let mut sel = services.iter().position(|s| s.id == d.profile.stream.service).unwrap_or(0);
     if f.dropdown(ui, "service", &t("field-service"), &names, &mut sel, true) {
-        d.profile.stream.service = SERVICES[sel].into();
+        d.profile.stream.service = services[sel].id.clone();
+        d.profile.stream.server = "auto".into();
     }
     let mut server = if d.profile.stream.server == "auto" { t("server-auto") } else { d.profile.stream.server.clone() };
     let before = server.clone();
@@ -596,7 +619,7 @@ fn stream_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
     if server != before {
         d.profile.stream.server = server;
     }
-    // Ключ хранится только в Windows Credential Manager (M3); в TOML не попадает.
+    // Ключ хранится только в Windows Credential Manager; в TOML не попадает.
     let show = d.show_key;
     let key_unit = if show { t("key-hide") } else { t("key-show") };
     let row_y = f.y;
@@ -612,6 +635,17 @@ fn stream_tab(app: &App, ui: &mut Ui, d: &mut SettingsDialog, f: &mut Form) {
     let (yes, no) = (t("yes"), t("no"));
     f.toggle(ui, "reconnect", &t("field-reconnect"), &mut d.profile.stream.reconnect, &yes, &no);
     f.toggle(ui, "dynbr", &t("field-dynamic-bitrate"), &mut d.profile.stream.dynamic_bitrate, &yes, &no);
+    if let Some(service) = d.services.find(&d.profile.stream.service) {
+        let output = d.profile.video.output.or(d.profile.video.canvas).unwrap_or(app.engine.state().output.canvas);
+        let fps = d.profile.video.fps.0 as f64 / d.profile.video.fps.1.max(1) as f64;
+        let exceeded = service.max_video_kbps.is_some_and(|max| d.profile.output.bitrate_kbps > max)
+            || service.max_resolution.is_some_and(|max| output.0 > max[0] || output.1 > max[1])
+            || service.max_fps.is_some_and(|max| fps > max as f64)
+            || service.keyframe_interval_s.is_some_and(|interval| d.profile.output.keyframe_interval_s != interval);
+        if exceeded {
+            f.note(&t("stream-service-warning"), f.p.warn);
+        }
+    }
 }
 
 /// Программный H.264: модуль Cisco скачивает сам пользователь (§9.1, ADR-0014).

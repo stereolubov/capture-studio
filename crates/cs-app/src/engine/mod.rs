@@ -7,6 +7,7 @@
 
 mod recording;
 mod scene_ops;
+mod streaming;
 mod thread;
 mod watchdog;
 

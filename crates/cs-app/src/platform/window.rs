@@ -117,8 +117,23 @@ impl Host {
         let Some(rt) = guard.as_mut() else {
             return;
         };
+        self.shared.repaint.set(false);
+        for id in std::mem::take(&mut *self.shared.hotkeys.borrow_mut()) {
+            if self.shared.focused.get() && rt.app.modal_open() {
+                continue;
+            }
+            if let Some(action) = cs_hotkeys::Action::from_id(id) {
+                rt.app.hotkey_action(action);
+            }
+        }
+        sync_hotkeys(self.hwnd.get(), rt);
         if self.shared.minimized.get() {
             rt.next_repaint = None;
+            let commands = rt.app.take_commands();
+            drop(guard);
+            for command in commands {
+                self.execute(command);
+            }
             return;
         }
         self.shared.repaint.set(false);
@@ -153,14 +168,6 @@ impl Host {
                 },
             );
         }
-
-        // Глобальные горячие клавиши сцен: id = номер сцены (с 1).
-        for id in std::mem::take(&mut *self.shared.hotkeys.borrow_mut()) {
-            if id >= 1 {
-                rt.app.send(cs_core::Command::SelectScene((id - 1) as usize));
-            }
-        }
-        sync_hotkeys(hwnd, rt);
 
         // Текстура превью движка: регистрируем в egui (без копий) при смене поколения.
         if let Some((generation, handle)) = rt.app.engine.preview_handle()
@@ -269,6 +276,9 @@ impl Host {
         let Some(rt) = guard.as_mut() else { return };
         // SAFETY: операции над собственным окном из его потока.
         unsafe {
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
             let mut wp =
                 WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
             if GetWindowPlacement(hwnd, &mut wp).is_ok() {
@@ -410,8 +420,10 @@ fn sync_hotkeys(hwnd: HWND, rt: &mut Runtime) {
         .hotkeys
         .iter()
         .filter_map(|(action, combo)| {
-            let n: i32 = action.strip_prefix("scene.")?.parse().ok()?;
-            (1..=9).contains(&n).then(|| (n, combo.clone()))
+            if combo.trim().is_empty() {
+                return None;
+            }
+            cs_hotkeys::Action::from_name(action).map(|action| (action.id(), combo.clone()))
         })
         .collect();
     if wanted == rt.registered_hotkeys {

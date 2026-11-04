@@ -8,7 +8,8 @@ streaming — "like OBS, but light, fast and clear at first glance". *Capture St
 > **Status: early development.** M0 and M1 are complete. The M2 audio, encoding and recording
 > features are implemented; local NVIDIA acceptance has passed with manual audio calibration.
 > AMD is partially tested and Intel is untested.
-> Live streaming is planned for M3, game capture for M4. See the [roadmap](docs/PLAN.md).
+> M3 is in progress: RTMP/RTMPS publishing is connected, with local RTMP interoperability verified.
+> Twitch/YouTube acceptance is pending; game capture is planned for M4. See the [roadmap](docs/PLAN.md).
 
 ## Goals
 
@@ -39,7 +40,8 @@ streaming — "like OBS, but light, fast and clear at first glance". *Capture St
   GPU→CPU copies, one render drop and no encoder drops. After a desktop audio offset of −10 ms,
   all 54 measured A/V events at the start/end were within ±20 ms. This calibration is specific to the
   test system. AMD is partially tested; Intel is untested. See the [report and coverage limits](docs/reports/M2.md).
-  Live streaming is not implemented yet.
+  M3 adds RTMP/RTMPS publishing, Credential Manager keys and reconnect handling; service and long-run
+  acceptance are pending. See the [M3 progress report](docs/reports/M3.md).
 
 Measured on M1 acceptance (1080p60 canvas, 4K display capture): 60.0 fps with 0 dropped frames,
 0.02 ms GPU composition time, 0.1% CPU, 66 MB RAM.
@@ -91,6 +93,8 @@ MIT — see [`LICENSE`](LICENSE).
 Capture Studio stands on the shoulders of open-source projects. Many thanks to their authors:
 
 - [egui](https://github.com/emilk/egui) by Emil Ernerfeldt — the user interface (MIT / Apache-2.0);
+- [native-tls](https://github.com/rust-native-tls/rust-native-tls) and [schannel](https://github.com/steffengy/schannel-rs)
+  by Steven Fackler, Steffen Butzer and contributors — RTMPS via Windows SChannel (MIT / Apache-2.0);
 - [windows-rs](https://github.com/microsoft/windows-rs) by Microsoft — Windows API bindings (MIT / Apache-2.0);
 - [rubato](https://github.com/HEnquist/rubato) by Henrik Enquist — audio resampling and clock-drift
   compensation (MIT / Apache-2.0);

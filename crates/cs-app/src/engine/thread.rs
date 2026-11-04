@@ -241,6 +241,9 @@ struct Worker {
     process: ProcessMonitor,
     audio: Option<AudioEngine>,
     recording: Option<Recording>,
+    streaming: Option<Recording>,
+    streaming_starting: Option<crossbeam_channel::Receiver<anyhow::Result<Recording>>>,
+    cancel_stream_start: bool,
     dropped_render_at_recording_start: u64,
     recording_starting: Option<crossbeam_channel::Receiver<anyhow::Result<Recording>>>,
     cancel_start: bool,
@@ -466,8 +469,15 @@ impl Worker {
                 }
                 return;
             }
-            Command::StartStream | Command::StopStream => {
-                // Вывод — этапы M2/M3; UI сообщает об этом сам.
+            Command::StartStream => {
+                self.start_output(true);
+                return;
+            }
+            Command::StopStream => {
+                self.cancel_stream_start = true;
+                if let Some(stream) = self.streaming.as_mut() {
+                    stream.request_stop();
+                }
                 return;
             }
             _ => {}
@@ -495,13 +505,22 @@ impl Worker {
     }
 
     fn start_recording(&mut self) {
-        if self.recording.is_some() || self.recording_starting.is_some() {
+        self.start_output(false);
+    }
+
+    fn start_output(&mut self, streaming: bool) {
+        if if streaming {
+            self.streaming.is_some() || self.streaming_starting.is_some()
+        } else {
+            self.recording.is_some() || self.recording_starting.is_some()
+        } {
             return;
         }
         use cs_core::config::profile::{
             ColorRange, ColorSpace, EncoderKind, RateControl as Rc, RecordFormat, ScaleFilter,
         };
-        if let Some(free) = free_mb(&self.recordings_dir)
+        if !streaming
+            && let Some(free) = free_mb(&self.recordings_dir)
             && free < STOP_FREE_MB
         {
             let _ = self.events.send(Event::DiskSpaceStopped);
@@ -509,6 +528,36 @@ impl Worker {
         }
         self.disk_warned = false;
         let p = &self.profile;
+        let stream = if streaming {
+            let prepare = || -> anyhow::Result<super::streaming::Config> {
+                let catalog = cs_core::services::Catalog::installed()?;
+                let server = catalog.server(&p.stream.service, &p.stream.server)?;
+                cs_output::rtmp::client::Endpoint::parse(&server)?;
+                let reference = p
+                    .stream
+                    .key_ref
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("укажите ключ трансляции в настройках"))?;
+                let key = cs_core::credentials::load(reference)?
+                    .filter(|k| !k.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("ключ трансляции не найден в Credential Manager"))?;
+                Ok(super::streaming::Config {
+                    server,
+                    key,
+                    reconnect: p.stream.reconnect,
+                    dynamic_bitrate: p.stream.dynamic_bitrate,
+                })
+            };
+            match prepare() {
+                Ok(cfg) => Some(cfg),
+                Err(e) => {
+                    let _ = self.events.send(Event::Error(format!("трансляция: {e}")));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let (ow, oh) = p.video.output.unwrap_or(self.canvas);
         let video = cs_encode::VideoSettings {
             width: ow & !1,
@@ -517,13 +566,14 @@ impl Worker {
             fps_den: p.video.fps.1.max(1),
             bitrate_kbps: p.output.bitrate_kbps,
             keyframe_interval_s: p.output.keyframe_interval_s,
-            rate_control: match p.output.rate_control {
+            rate_control: match if streaming { Rc::Cbr } else { p.output.rate_control } {
                 Rc::Cbr => cs_encode::RateControl::Cbr,
                 Rc::Vbr => cs_encode::RateControl::Vbr,
                 Rc::Cqp => cs_encode::RateControl::Cqp(p.output.cq_level),
             },
         };
         let cfg = RecordingConfig {
+            stream,
             path: self.recordings_dir.join(recording::file_name(
                 if p.output.record_format == RecordFormat::FragmentedMp4 { "mp4" } else { "mkv" },
             )),
@@ -549,13 +599,18 @@ impl Worker {
                 EncoderKind::Software => cs_encode::EncoderChoice::Software,
             },
             // Запись — тюнинг «качество».
-            nvenc: encoder_options(p),
+            nvenc: if streaming {
+                cs_encode::EncoderOptions { low_latency: true, b_frames: 0, lookahead: false, ..encoder_options(p) }
+            } else {
+                encoder_options(p)
+            },
             audio_kbps: p.output.audio_bitrate_kbps,
             // Opus — только в MKV без перепаковки (§9.2, ADR-0015).
-            opus: p.output.audio_codec == cs_core::config::profile::AudioCodec::Opus
+            opus: !streaming
+                && p.output.audio_codec == cs_core::config::profile::AudioCodec::Opus
                 && p.output.record_format == RecordFormat::Mkv,
-            tracks: p.output.record_tracks,
-            remux: matches!(p.output.record_format, RecordFormat::MkvRemuxMp4 | RecordFormat::Mp4),
+            tracks: if streaming { 1 } else { p.output.record_tracks },
+            remux: !streaming && matches!(p.output.record_format, RecordFormat::MkvRemuxMp4 | RecordFormat::Mp4),
             // «MP4» — то же, что MKV с ремуксом, но без исходника.
             delete_source: p.output.record_format != RecordFormat::MkvRemuxMp4 || p.output.delete_mkv_after_remux,
             // Фрагментированный MP4 пишется сразу и не перепаковывается (безопасен при сбое).
@@ -571,8 +626,13 @@ impl Worker {
         });
         match spawned {
             Ok(_) => {
-                self.recording_starting = Some(rx);
-                self.cancel_start = false;
+                if streaming {
+                    self.streaming_starting = Some(rx);
+                    self.cancel_stream_start = false;
+                } else {
+                    self.recording_starting = Some(rx);
+                    self.cancel_start = false;
+                }
             }
             Err(e) => {
                 let _ = self.events.send(Event::Error(format!("запись не начата: {e}")));
@@ -584,7 +644,11 @@ impl Worker {
     /// Перезапуск аудиодвижка после смены устройств или состава каналов. Во время записи
     /// откладывается до её остановки: иначе оборвалась бы звуковая дорожка.
     fn request_audio_restart(&mut self) {
-        if self.recording.is_some() || self.recording_starting.is_some() {
+        if self.recording.is_some()
+            || self.recording_starting.is_some()
+            || self.streaming.is_some()
+            || self.streaming_starting.is_some()
+        {
             tracing::info!("аудио: изменения каналов применятся после остановки записи");
             self.audio_restart_pending = true;
         } else {
@@ -593,7 +657,12 @@ impl Worker {
     }
 
     fn apply_pending_audio_restart(&mut self) {
-        if self.audio_restart_pending && self.recording.is_none() && self.recording_starting.is_none() {
+        if self.audio_restart_pending
+            && self.recording.is_none()
+            && self.recording_starting.is_none()
+            && self.streaming.is_none()
+            && self.streaming_starting.is_none()
+        {
             self.audio_restart_pending = false;
             self.restart_audio();
         }
@@ -628,6 +697,35 @@ impl Worker {
     }
 
     fn poll_recording_start(&mut self) {
+        if let Some(rx) = &self.streaming_starting
+            && let Ok(result) = rx.try_recv()
+        {
+            self.streaming_starting = None;
+            match result {
+                Ok(mut s) => {
+                    if self.cancel_stream_start {
+                        s.request_stop();
+                    }
+                    self.streaming = Some(s);
+                }
+                Err(e) => {
+                    let _ = self.events.send(Event::Error(format!("трансляция не начата: {e}")));
+                }
+            }
+        }
+        if let Some(s) = self.streaming.as_mut()
+            && s.finished()
+            && !s.is_stopping()
+        {
+            s.request_stop();
+        }
+        if self.streaming.as_ref().is_some_and(Recording::stop_ready)
+            && let Some(s) = self.streaming.take()
+        {
+            // Every worker has exited, so joining here cannot wait on network or encoder work.
+            s.stop_blocking();
+            let _ = self.events.send(Event::StreamStopped);
+        }
         let Some(rx) = &self.recording_starting else { return };
         let Ok(result) = rx.try_recv() else { return };
         self.recording_starting = None;
@@ -723,7 +821,7 @@ impl Worker {
             // Средняя задержка захвата: меряется и вне записи, чтобы к старту записи она устоялась.
             self.video_lag = if self.video_lag == 0.0 { lag } else { self.video_lag * 0.95 + lag * 0.05 };
         }
-        if let Some(rec) = self.recording.as_mut() {
+        for rec in self.recording.iter_mut().chain(self.streaming.iter_mut()) {
             let canvas = compositor.canvas();
             // Задержка захвата в метке меняется ступенькой, только когда живое значение ушло больше
             // чем на полкадра. Живое значение медленно ползёт в пределах кадра (таймер рендера и
@@ -793,12 +891,29 @@ impl Worker {
         if self.recording_starting.is_some() {
             state.record = OutputStatus::Starting;
         }
+        if self.streaming_starting.is_some() {
+            state.stream = if self.cancel_stream_start { OutputStatus::Stopping } else { OutputStatus::Starting };
+        }
+        if let Some(s) = &self.streaming {
+            use std::sync::atomic::Ordering::Relaxed;
+            state.stream = if s.is_stopping() { OutputStatus::Stopping } else { s.stats.stream_status.lock().clone() };
+            state.stream_elapsed_secs = s.stats.live_since.lock().map_or(0, |t| t.elapsed().as_secs());
+            state.stats.bitrate_kbps = s.stats.bitrate_kbps.load(Relaxed) as f32;
+            state.stats.transferred_bytes = s.stats.bytes.load(Relaxed);
+            state.stats.rtt_ms = s.stats.rtt_us.load(Relaxed) as f32 / 1000.;
+            state.stats.dropped_network = s.stats.dropped_network.load(Relaxed);
+            state.stats.dropped_encoder += s.stats.dropped_encoder.load(Relaxed);
+            state.stats.dropped_frames =
+                state.stats.dropped_render + state.stats.dropped_encoder + state.stats.dropped_network;
+        }
         if let Some(r) = &self.recording {
             state.record = OutputStatus::Live;
             state.record_paused = r.pause.paused.load(std::sync::atomic::Ordering::Acquire);
             state.record_elapsed_secs = r.elapsed_secs();
-            state.stats.dropped_encoder = r.stats.dropped_encoder.load(std::sync::atomic::Ordering::Relaxed);
+            state.stats.dropped_encoder += r.stats.dropped_encoder.load(std::sync::atomic::Ordering::Relaxed);
         }
+        state.stats.dropped_frames =
+            state.stats.dropped_render + state.stats.dropped_encoder + state.stats.dropped_network;
         *self.shared.snapshot.lock() = Arc::new(state);
     }
 
@@ -829,6 +944,14 @@ impl Worker {
             self.stats.cpu_percent = p.cpu_percent;
             self.stats.ram_mb = p.working_set_mb;
             self.seconds += 1;
+            if self.seconds.is_multiple_of(10)
+                && let Some(s) = &self.streaming
+            {
+                self.stats.bitrate_history.push(s.stats.bitrate_kbps.load(Ordering::Relaxed) as f32);
+                if self.stats.bitrate_history.len() > 60 {
+                    self.stats.bitrate_history.remove(0);
+                }
+            }
             if self.seconds.is_multiple_of(60) {
                 tracing::info!(
                     "рендер: {:.1} fps, компоновка {:.2} мс GPU, пропущено {} кадров, захват {:.1} мс, CPU {:.1}%, RAM {:.0} МБ",
@@ -941,6 +1064,9 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
         process: ProcessMonitor::new(),
         audio: None,
         recording: None,
+        streaming: None,
+        streaming_starting: None,
+        cancel_stream_start: false,
         dropped_render_at_recording_start: 0,
         recording_starting: None,
         cancel_start: false,
@@ -1037,6 +1163,14 @@ pub(super) fn run(cfg: EngineConfig, rx: Receiver<Command>, events: Sender<Event
     if let Some(r) = w.recording.take() {
         // Выход во время записи: файл финализируется до завершения процесса (§15).
         r.stop_blocking();
+    }
+    if let Some(s) = w.streaming.take() {
+        s.stop_blocking();
+    }
+    if let Some(rx) = w.streaming_starting.take()
+        && let Ok(Ok(s)) = rx.recv()
+    {
+        s.stop_blocking();
     }
     if w.dirty_since.is_some() {
         w.save_now(false);

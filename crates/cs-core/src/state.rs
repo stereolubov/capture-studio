@@ -6,12 +6,16 @@
 use crate::model::{Crop, GameCaptureMethod, SceneId, SourceId, SourceKind, Transform, Transition};
 
 /// Состояние вывода — конечный автомат §10.3.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum OutputStatus {
+    #[default]
     Idle,
     Starting,
     Live,
-    Reconnecting { attempt: u32, max: u32 },
+    Reconnecting {
+        attempt: u32,
+        max: u32,
+    },
     Stopping,
     Error(String),
 }

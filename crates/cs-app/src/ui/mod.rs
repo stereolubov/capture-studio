@@ -164,6 +164,52 @@ impl App {
         self.engine.send(cmd);
     }
 
+    pub fn hotkey_action(&mut self, action: cs_hotkeys::Action) {
+        use cs_core::state::OutputStatus;
+        use cs_hotkeys::Action;
+        let state = self.engine.state();
+        match action {
+            Action::Scene(n) => self.send(Command::SelectScene(n)),
+            Action::Stream => match state.stream {
+                OutputStatus::Starting | OutputStatus::Live | OutputStatus::Reconnecting { .. } => {
+                    self.send(Command::StopStream)
+                }
+                OutputStatus::Idle | OutputStatus::Error(_) => self.send(Command::StartStream),
+                OutputStatus::Stopping => {}
+            },
+            Action::Record => match state.record {
+                OutputStatus::Starting | OutputStatus::Live => self.send(Command::StopRecording),
+                OutputStatus::Idle | OutputStatus::Error(_) => self.send(Command::StartRecording),
+                _ => {}
+            },
+            Action::Pause => {
+                if state.record == OutputStatus::Live {
+                    self.send(Command::TogglePauseRecording);
+                }
+            }
+            Action::MuteMic => {
+                if let Some(channel) = self
+                    .profile
+                    .audio
+                    .channels
+                    .iter()
+                    .position(|c| c.kind == cs_core::config::profile::AudioChannelKind::Mic)
+                {
+                    self.send(Command::ToggleMute(channel));
+                }
+            }
+            Action::Mini => {
+                if self.mode == Mode::Mini {
+                    self.mode = Mode::Main;
+                    self.push_command(WindowCommand::ExitMini);
+                } else {
+                    self.mode = Mode::Mini;
+                    self.push_command(WindowCommand::EnterMini);
+                }
+            }
+        }
+    }
+
     /// Открыть окно настроек на вкладке.
     pub fn open_settings(&mut self, tab: SettingsTab) {
         tracing::info!("окно: настройки ({tab:?})");
@@ -384,17 +430,6 @@ impl App {
         } else if redo {
             self.send(Command::Redo);
         }
-        let keys = [egui::Key::F1, egui::Key::F2, egui::Key::F3, egui::Key::F4];
-        let pressed: Vec<usize> = ctx.input(|i| {
-            keys.iter()
-                .enumerate()
-                .filter(|(_, k)| i.key_pressed(**k) && i.modifiers.is_none())
-                .map(|(n, _)| n)
-                .collect()
-        });
-        for n in pressed {
-            self.send(Command::SelectScene(n));
-        }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             if self.menu.is_open() {
                 self.menu.close();
@@ -548,4 +583,60 @@ pub fn mini_size() -> Vec2 {
 pub fn centered(area: Rect, size: Vec2) -> Rect {
     let min = area.center() - size / 2.0;
     Rect::from_min_size(Pos2::new(min.x.round(), min.y.round()), size)
+}
+
+#[cfg(test)]
+mod hotkey_tests {
+    use super::*;
+    use cs_core::{AppState, Event, state::OutputStatus};
+    use cs_hotkeys::Action;
+    use std::{cell::RefCell, rc::Rc};
+    struct Spy {
+        state: AppState,
+        sent: Rc<RefCell<Vec<Command>>>,
+    }
+    impl Engine for Spy {
+        fn send(&mut self, c: Command) {
+            self.sent.borrow_mut().push(c);
+        }
+        fn poll(&mut self) -> Vec<Event> {
+            Vec::new()
+        }
+        fn state(&self) -> &AppState {
+            &self.state
+        }
+    }
+    fn app(stream: OutputStatus, record: OutputStatus) -> (App, Rc<RefCell<Vec<Command>>>) {
+        let mock = cs_core::mock::MockEngine::new(false);
+        let mut state = mock.state().clone();
+        state.stream = stream;
+        state.record = record;
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        (App::new(Box::new(Spy { state, sent: sent.clone() }), Settings::default(), Profile::default(), None), sent)
+    }
+    #[test]
+    fn output_hotkeys_cancel_starting_and_do_not_restart_while_stopping() {
+        for stream in [OutputStatus::Starting, OutputStatus::Live, OutputStatus::Reconnecting { attempt: 1, max: 25 }] {
+            let (mut app, sent) = app(stream, OutputStatus::Idle);
+            app.hotkey_action(Action::Stream);
+            assert!(matches!(sent.borrow().as_slice(), [Command::StopStream]));
+        }
+        let (mut app, sent) = app(OutputStatus::Stopping, OutputStatus::Stopping);
+        app.hotkey_action(Action::Stream);
+        app.hotkey_action(Action::Record);
+        app.hotkey_action(Action::Pause);
+        assert!(sent.borrow().is_empty());
+    }
+    #[test]
+    fn recording_mute_and_mini_actions_reach_the_correct_controls() {
+        let (mut app, sent) = app(OutputStatus::Idle, OutputStatus::Idle);
+        app.hotkey_action(Action::Record);
+        app.hotkey_action(Action::MuteMic);
+        assert!(matches!(sent.borrow().as_slice(), [Command::StartRecording, Command::ToggleMute(1)]));
+        app.hotkey_action(Action::Mini);
+        assert_eq!(app.mode, Mode::Mini);
+        app.hotkey_action(Action::Mini);
+        assert_eq!(app.mode, Mode::Main);
+        assert_eq!(app.take_commands(), [WindowCommand::EnterMini, WindowCommand::ExitMini]);
+    }
 }

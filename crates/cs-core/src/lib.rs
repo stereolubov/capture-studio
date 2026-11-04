@@ -6,11 +6,14 @@
 
 pub mod clock;
 pub mod config;
+#[cfg(windows)]
+pub mod credentials;
 pub mod estimate;
 pub mod geometry;
 pub mod history;
 pub mod mock;
 pub mod model;
+pub mod services;
 pub mod state;
 
 pub use state::{AppState, Command, Event};

@@ -7,8 +7,9 @@
 
 > **Статус: ранняя разработка.** M0 и M1 завершены. Функции M2 — аудио, кодирование и запись —
 > реализованы; локальная приёмка NVIDIA пройдена после ручной калибровки звука.
-> AMD проверена частично, Intel не проверена. Трансляция запланирована на M3,
-> захват игр — на M4. План — [`docs/PLAN.md`](docs/PLAN.md).
+> AMD проверена частично, Intel не проверена. M3 в работе: RTMP/RTMPS подключены,
+> локальная публикация RTMP проверена; приёмка Twitch/YouTube впереди.
+> Захват игр — на M4. План — [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Реализованные возможности (M0–M2; приёмка NVIDIA завершена после калибровки)
 
@@ -24,7 +25,8 @@
   счётчик GPU→CPU — 0, один пропуск рендера и ни одного у энкодера. После смещения звука рабочего стола
   −10 мс все 54 измеренных события начала/конца часа уложились в ±20 мс. Калибровка относится к этому
   стенду. AMD проверена частично, Intel не проверена. Подробности и ограничения — в [отчёте](docs/reports/M2.md).
-  Трансляция пока не реализована.
+  В M3 подключены RTMP/RTMPS, ключи в Credential Manager и переподключение;
+  реальная приёмка сервисов и длительные прогоны впереди. [Отчёт M3](docs/reports/M3.md).
 
 ## Сборка
 
@@ -74,6 +76,8 @@ MIT — см. [`LICENSE`](LICENSE).
 Capture Studio построен на открытых проектах. Большое спасибо их авторам:
 
 - [egui](https://github.com/emilk/egui), Emil Ernerfeldt — интерфейс (MIT / Apache-2.0);
+- [native-tls](https://github.com/rust-native-tls/rust-native-tls) и [schannel](https://github.com/steffengy/schannel-rs),
+  Steven Fackler, Steffen Butzer и участники — RTMPS через SChannel (MIT / Apache-2.0);
 - [windows-rs](https://github.com/microsoft/windows-rs), Microsoft — привязки к Windows API (MIT / Apache-2.0);
 - [rubato](https://github.com/HEnquist/rubato), Henrik Enquist — ресемплинг звука и компенсация дрейфа
   часов (MIT / Apache-2.0);

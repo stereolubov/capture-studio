@@ -47,10 +47,11 @@ impl AudioEncoder {
 }
 
 /// Сообщение мультиплексору: поток (0 — видео, 1.. — дорожки аудио) и пакет.
-type MuxMsg = (usize, Packet);
+pub(super) type MuxMsg = (usize, Packet);
 
 /// Параметры записи.
 pub struct RecordingConfig {
+    pub stream: Option<super::streaming::Config>,
     pub path: PathBuf,
     pub video: VideoSettings,
     pub color: ColorParams,
@@ -84,10 +85,23 @@ pub struct PauseState {
 pub struct RecordStats {
     pub bytes: AtomicU64,
     pub dropped_encoder: AtomicU64,
+    pub dropped_network: AtomicU64,
+    pub queue_gap: AtomicBool,
+    pub request_keyframe: AtomicBool,
+    pub requested_bitrate_kbps: AtomicU64,
+    pub applied_bitrate_kbps: AtomicU64,
+    pub dynamic_bitrate_failed: AtomicBool,
+    pub latest_dts: std::sync::atomic::AtomicI64,
+    pub bitrate_kbps: AtomicU64,
+    pub rtt_us: AtomicU64,
+    pub stream_status: parking_lot::Mutex<cs_core::state::OutputStatus>,
+    pub live_since: parking_lot::Mutex<Option<Instant>>,
 }
 
 /// Идущая запись.
 pub struct Recording {
+    streaming: bool,
+    stopping: bool,
     pub path: PathBuf,
     pub started: Instant,
     start_ticks: Ticks,
@@ -147,7 +161,9 @@ impl Recording {
         audio: Option<Receiver<Arc<TimedBlock>>>,
         events: Sender<Event>,
     ) -> anyhow::Result<Self> {
-        if let Some(dir) = cfg.path.parent() {
+        if cfg.stream.is_none()
+            && let Some(dir) = cfg.path.parent()
+        {
             std::fs::create_dir_all(dir)?;
         }
         let converter = {
@@ -162,7 +178,12 @@ impl Recording {
         let stats = Arc::new(RecordStats::default());
         let pause = Arc::new(PauseState::default());
         let (video_tx, video_rx) = bounded::<(ID3D11Texture2D, i64)>(4);
-        let (mux_tx, mux_rx) = unbounded::<MuxMsg>();
+        let streaming = cfg.stream.is_some();
+        if streaming {
+            *stats.stream_status.lock() = cs_core::state::OutputStatus::Starting;
+            stats.applied_bitrate_kbps.store(u64::from(cfg.video.bitrate_kbps), Ordering::Relaxed);
+        }
+        let (mux_tx, mux_rx) = if streaming { bounded::<MuxMsg>(256) } else { unbounded::<MuxMsg>() };
         let tracks: Vec<usize> = (0..TRACKS).filter(|t| cfg.tracks & (1 << t) != 0).collect();
         let tracks = if tracks.is_empty() { vec![0] } else { tracks };
         let mut threads = Vec::new();
@@ -174,6 +195,8 @@ impl Recording {
         let (ready_tx, ready_rx) = bounded::<Result<String, String>>(1);
         let vtx = mux_tx.clone();
         let vstop = stop.clone();
+        let vstats = stats.clone();
+        let vevents = events.clone();
         threads.push(std::thread::Builder::new().name("encoder-video".into()).spawn(move || {
             let mut enc = match VideoEncoder::open(&device, &vs, choice, &nv) {
                 Ok(e) => {
@@ -186,19 +209,48 @@ impl Recording {
                 }
             };
             let mut out = Vec::new();
+            let mut encoder_dropped = 0;
             loop {
                 match video_rx.recv_timeout(std::time::Duration::from_millis(2)) {
                     Ok((tex, pts)) => enc.push(tex, pts),
                     Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                 }
+                if streaming && !vstop.load(Ordering::Acquire) && !vstats.dynamic_bitrate_failed.load(Ordering::Acquire)
+                {
+                    let target = vstats.requested_bitrate_kbps.swap(0, Ordering::AcqRel) as u32;
+                    if target != 0 && u64::from(target) != vstats.applied_bitrate_kbps.load(Ordering::Relaxed) {
+                        match enc.set_bitrate(target, &mut out) {
+                            Ok(()) => {
+                                vstats.applied_bitrate_kbps.store(u64::from(target), Ordering::Relaxed);
+                                tracing::info!("трансляция: видео-битрейт {target} кбит/с");
+                            }
+                            Err(e) => {
+                                vstats.dynamic_bitrate_failed.store(true, Ordering::Release);
+                                let _ = vevents.send(Event::Error(format!(
+                                    "динамический битрейт недоступен: {e}; трансляция продолжается"
+                                )));
+                            }
+                        }
+                    }
+                }
+                if streaming && !vstop.load(Ordering::Acquire) && vstats.request_keyframe.swap(false, Ordering::AcqRel)
+                {
+                    enc.request_keyframe();
+                }
                 if let Err(e) = enc.pump(&mut out) {
                     tracing::error!("видеоэнкодер: {e}");
+                    if streaming {
+                        vstop.store(true, Ordering::Release);
+                    }
                     break;
                 }
                 for p in out.drain(..) {
-                    let _ = vtx.send((0, p));
+                    enqueue(&vtx, (0, p), streaming, &vstats);
                 }
+                let dropped = enc.dropped();
+                vstats.dropped_encoder.fetch_add(dropped.saturating_sub(encoder_dropped), Ordering::Relaxed);
+                encoder_dropped = dropped;
                 if vstop.load(Ordering::Acquire) && video_rx.is_empty() {
                     break;
                 }
@@ -206,8 +258,9 @@ impl Recording {
             if let Err(e) = enc.drain(&mut out) {
                 tracing::warn!("дренаж видеоэнкодера: {e}");
             }
+            vstats.dropped_encoder.fetch_add(enc.dropped().saturating_sub(encoder_dropped), Ordering::Relaxed);
             for p in out.drain(..) {
-                let _ = vtx.send((0, p));
+                enqueue(&vtx, (0, p), streaming, &vstats);
             }
         })?);
         match ready_rx.recv() {
@@ -245,6 +298,7 @@ impl Recording {
         if let Some(rx) = audio {
             let atx = mux_tx.clone();
             let astop = stop.clone();
+            let astats = stats.clone();
             let tr = tracks.clone();
             let (kbps, opus) = (cfg.audio_kbps, cfg.opus);
             let apause = pause.clone();
@@ -260,6 +314,9 @@ impl Recording {
                         Ok(e) => encs.push(e),
                         Err(e) => {
                             tracing::error!("аудиоэнкодер: {e}");
+                            if streaming {
+                                astop.store(true, Ordering::Release);
+                            }
                             return;
                         }
                     }
@@ -276,14 +333,14 @@ impl Recording {
                             tracing::warn!("аудиоэнкодер: {e}");
                         }
                         for p in out.drain(..) {
-                            let _ = atx.send((k + 1, p));
+                            enqueue(&atx, (k + 1, p), streaming, &astats);
                         }
                     }
                 }
                 for (k, enc) in encs.iter_mut().enumerate() {
                     let _ = enc.drain(&mut out);
                     for p in out.drain(..) {
-                        let _ = atx.send((k + 1, p));
+                        enqueue(&atx, (k + 1, p), streaming, &astats);
                     }
                 }
             })?);
@@ -295,7 +352,12 @@ impl Recording {
         let mstats = stats.clone();
         let (w, h) = (vs.width, vs.height);
         let (fragmented, frame_100ns) = (cfg.fragmented, vs.frame_duration());
+        let mstop = stop.clone();
         threads.push(std::thread::Builder::new().name("muxer".into()).spawn(move || {
+            if let Some(stream) = cfg.stream {
+                super::streaming::run(stream, mux_rx, mstats, mstop, events, vs, cfg.audio_kbps);
+                return;
+            }
             if let Err(e) = mux_loop(&path, mux_rx, (w, h), &audio_tracks, (fragmented, frame_100ns), &mstats) {
                 tracing::error!("запись {}: {e}", path.display());
                 let _ = events.send(Event::Error(format!("запись: {e}")));
@@ -303,6 +365,8 @@ impl Recording {
         })?);
 
         Ok(Self {
+            streaming,
+            stopping: false,
             path: cfg.path,
             started: Instant::now(),
             start_ticks,
@@ -331,7 +395,7 @@ impl Recording {
         canvas_size: (u32, u32),
         at: Ticks,
     ) {
-        if self.pause.paused.load(Ordering::Acquire) {
+        if self.stopping || self.pause.paused.load(Ordering::Acquire) {
             return;
         }
         let elapsed = to_100ns(at, self.start_ticks) - self.pause.total.load(Ordering::Acquire);
@@ -377,14 +441,40 @@ impl Recording {
         (self.started.elapsed().as_secs() as i64 - paused).max(0) as u64
     }
 
-    /// Остановка с ожиданием финализации (выход из приложения).
-    pub fn stop_blocking(mut self) {
+    pub fn finished(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+
+    /// Keeps ownership of the encoder/network workers until all of them have exited.
+    /// The render thread stops feeding frames immediately and polls completion without waiting.
+    pub fn request_stop(&mut self) {
+        self.stopping = true;
         self.stop.store(true, Ordering::Release);
         self.video_tx = None;
+        if self.streaming {
+            *self.stats.stream_status.lock() = cs_core::state::OutputStatus::Stopping;
+        }
+    }
+
+    pub fn is_stopping(&self) -> bool {
+        self.stopping
+    }
+
+    pub fn stop_ready(&self) -> bool {
+        self.stopping && workers_finished(&self.threads)
+    }
+
+    /// Остановка с ожиданием финализации (выход из приложения).
+    pub fn stop_blocking(mut self) {
+        self.request_stop();
         for t in std::mem::take(&mut self.threads) {
             let _ = t.join();
         }
-        tracing::info!("запись завершена при выходе: {}", self.path.display());
+        if self.streaming {
+            tracing::info!("трансляция: потоки завершены");
+        } else {
+            tracing::info!("запись завершена при выходе: {}", self.path.display());
+        }
         // Ремукс при выходе не выполняется (может занять время): MKV остаётся, его можно перепаковать позже.
     }
 
@@ -395,6 +485,7 @@ impl Recording {
         let path = self.path.clone();
         let threads = std::mem::take(&mut self.threads);
         let (remux, delete_source) = (self.remux, self.delete_source);
+        let streaming = self.streaming;
         tracing::info!("запись: пропущено энкодером {} кадров", self.stats.dropped_encoder.load(Ordering::Relaxed));
         let gpu_to_cpu_copies_at_start = self.gpu_to_cpu_copies_at_start;
         let _ = std::thread::Builder::new().name("recording-finish".into()).spawn(move || {
@@ -406,11 +497,34 @@ impl Recording {
                 cs_gpu::gpu_to_cpu_copies().saturating_sub(gpu_to_cpu_copies_at_start)
             );
             tracing::info!("запись завершена: {}", path.display());
-            let _ = events.send(Event::RecordingStopped { path: path.display().to_string() });
+            if streaming {
+                let _ = events.send(Event::StreamStopped);
+            } else {
+                let _ = events.send(Event::RecordingStopped { path: path.display().to_string() });
+            }
             if remux {
                 remux_file(&path, delete_source, &events, &progress);
             }
         });
+    }
+}
+
+fn workers_finished(workers: &[std::thread::JoinHandle<()>]) -> bool {
+    workers.iter().all(std::thread::JoinHandle::is_finished)
+}
+
+fn enqueue(tx: &Sender<MuxMsg>, msg: MuxMsg, streaming: bool, stats: &RecordStats) {
+    if streaming {
+        stats.latest_dts.fetch_max(msg.1.dts, Ordering::Relaxed);
+        let video = msg.0 == 0;
+        if tx.try_send(msg).is_err() {
+            stats.queue_gap.store(true, Ordering::Release);
+            if video {
+                stats.dropped_network.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    } else {
+        let _ = tx.send(msg);
     }
 }
 
@@ -538,6 +652,41 @@ pub fn file_name(ext: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::FrameGrid;
+
+    #[test]
+    fn drain_waits_for_the_last_worker_without_blocking_poll() {
+        let (release, wait) = std::sync::mpsc::channel();
+        let first = std::thread::spawn(|| {});
+        let last = std::thread::spawn(move || {
+            wait.recv().expect("release last worker");
+        });
+        let workers = vec![first, last];
+        assert!(!super::workers_finished(&workers), "network worker still owns its session");
+        release.send(()).expect("release");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !super::workers_finished(&workers) {
+            assert!(std::time::Instant::now() < deadline, "workers did not finish");
+            std::thread::yield_now();
+        }
+        for worker in workers {
+            worker.join().expect("worker");
+        }
+    }
+
+    #[test]
+    fn stream_queue_is_bounded_and_marks_decode_discontinuity() {
+        use super::*;
+        let stats = RecordStats::default();
+        let (tx, rx) = bounded(1);
+        for i in 0..3 {
+            enqueue(&tx, (0, Packet { data: vec![1], pts: i, dts: i, keyframe: i == 0 }), true, &stats);
+        }
+        assert_eq!(rx.len(), 1);
+        assert_eq!(stats.dropped_network.load(Ordering::Relaxed), 2);
+        assert!(stats.queue_gap.load(Ordering::Relaxed));
+        assert_eq!(stats.latest_dts.load(Ordering::Relaxed), 2);
+        assert!(rx.recv().expect("first packet").1.keyframe);
+    }
 
     #[test]
     fn jitter_snaps_to_frame_grid() {
