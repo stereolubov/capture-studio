@@ -137,6 +137,7 @@ struct InFlight {
 }
 
 pub struct NvencEncoder {
+    reconfigure: Option<Box<(NV_ENC_INITIALIZE_PARAMS, NV_ENC_CONFIG)>>,
     api: Api,
     encoder: *mut c_void,
     bitstreams: Vec<NV_ENC_OUTPUT_PTR>,
@@ -144,6 +145,7 @@ pub struct NvencEncoder {
     registered: Vec<(usize, NV_ENC_REGISTERED_PTR)>,
     in_flight: VecDeque<InFlight>,
     queued: VecDeque<(ID3D11Texture2D, i64)>,
+    force_keyframe: bool,
     next_slot: usize,
     frame_idx: u32,
     /// Отставание пакетов при анализе наперёд: «кадр принят» не значит, что готовы пакеты всех
@@ -186,12 +188,14 @@ impl NvencEncoder {
     pub fn new(device: &ID3D11Device, s: &VideoSettings, opts: &EncoderOptions) -> Result<Self, EncodeError> {
         let api = load()?;
         let mut enc = Self {
+            reconfigure: None,
             api,
             encoder: std::ptr::null_mut(),
             bitstreams: Vec::new(),
             registered: Vec::new(),
             in_flight: VecDeque::new(),
             queued: VecDeque::new(),
+            force_keyframe: false,
             next_slot: 0,
             frame_idx: 0,
             lookahead: if opts.lookahead { usize::from(LOOKAHEAD_FRAMES) } else { 0 },
@@ -303,6 +307,9 @@ impl NvencEncoder {
             init.tuningInfo = tuning;
             nv!(enc.api, nvEncInitializeEncoder(enc.encoder, &mut init))
                 .map_err(|r| enc.fail("инициализация NVENC", r))?;
+            // Keep POD configuration, never the pointer into this stack frame.
+            init.encodeConfig = std::ptr::null_mut();
+            enc.reconfigure = Some(Box::new((init, cfg)));
 
             for _ in 0..pipeline_depth(opts) + MAX_QUEUED {
                 let mut b: NV_ENC_CREATE_BITSTREAM_BUFFER = std::mem::zeroed();
@@ -346,6 +353,36 @@ impl NvencEncoder {
     pub fn drain(&mut self, out: &mut Vec<Packet>) -> Result<(), EncodeError> {
         self.pump(out)?;
         self.encode(None, out)
+    }
+
+    pub fn request_keyframe(&mut self) {
+        self.force_keyframe = true;
+    }
+
+    pub fn set_bitrate(&mut self, kbps: u32) -> Result<(), EncodeError> {
+        let state = self.reconfigure.as_mut().ok_or_else(|| EncodeError::Failed("NVENC без конфигурации".into()))?;
+        let rc = &mut state.1.rcParams;
+        if rc.rateControlMode != _NV_ENC_PARAMS_RC_MODE_NV_ENC_PARAMS_RC_CBR {
+            return Err(EncodeError::Failed("динамический битрейт NVENC требует CBR".into()));
+        }
+        let previous = (rc.averageBitRate, rc.maxBitRate, rc.vbvBufferSize, rc.vbvInitialDelay);
+        let bps = kbps.saturating_mul(1000);
+        (rc.averageBitRate, rc.maxBitRate, rc.vbvBufferSize, rc.vbvInitialDelay) = (bps, bps, bps, bps);
+        // SAFETY: SDK structs contain only POD; the copied init has no owned pointers.
+        // The one configuration pointer is rebound to live storage for the synchronous call.
+        let status = unsafe {
+            let mut params: NV_ENC_RECONFIGURE_PARAMS = std::mem::zeroed();
+            params.version = NV_ENC_RECONFIGURE_PARAMS_VER;
+            params.reInitEncodeParams = std::ptr::read(&state.0);
+            params.reInitEncodeParams.encodeConfig = &mut state.1;
+            nv!(self.api, nvEncReconfigureEncoder(self.encoder, &mut params))
+        };
+        if let Err(error) = status {
+            let rc = &mut state.1.rcParams;
+            (rc.averageBitRate, rc.maxBitRate, rc.vbvBufferSize, rc.vbvInitialDelay) = previous;
+            return Err(self.fail("изменение битрейта NVENC", error));
+        }
+        Ok(())
     }
 
     fn registration(&mut self, tex: &ID3D11Texture2D) -> Result<NV_ENC_REGISTERED_PTR, EncodeError> {
@@ -397,6 +434,11 @@ impl NvencEncoder {
                     pic.pictureStruct = _NV_ENC_PIC_STRUCT_NV_ENC_PIC_STRUCT_FRAME;
                     pic.inputTimeStamp = pts.max(0) as u64;
                     pic.frameIdx = self.frame_idx;
+                    if self.force_keyframe {
+                        pic.encodePicFlags = (_NV_ENC_PIC_FLAGS_NV_ENC_PIC_FLAG_FORCEIDR
+                            | _NV_ENC_PIC_FLAGS_NV_ENC_PIC_FLAG_OUTPUT_SPSPPS)
+                            as u32;
+                    }
                     self.frame_idx = self.frame_idx.wrapping_add(1);
                     self.in_flight.push_back(InFlight { slot, mapped: map.mappedResource, _texture: tex });
                     self.input_pts.push_back(pts);
@@ -406,8 +448,18 @@ impl NvencEncoder {
             nv!(self.api, nvEncEncodePicture(self.encoder, &mut pic))
         };
         match status {
-            Ok(()) => self.collect(out, flush),
-            Err(_NVENCSTATUS_NV_ENC_ERR_NEED_MORE_INPUT) => Ok(()),
+            Ok(()) => {
+                if !flush {
+                    self.force_keyframe = false;
+                }
+                self.collect(out, flush)
+            }
+            Err(_NVENCSTATUS_NV_ENC_ERR_NEED_MORE_INPUT) => {
+                if !flush {
+                    self.force_keyframe = false;
+                }
+                Ok(())
+            }
             Err(r) => Err(self.fail("кодирование кадра", r)),
         }
     }

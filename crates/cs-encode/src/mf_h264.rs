@@ -23,6 +23,7 @@ pub struct MfH264Encoder {
     output_size: u32,
     need_input: u32,
     pending: VecDeque<(ID3D11Texture2D, i64)>,
+    force_keyframe: bool,
     frame_duration: i64,
     draining: bool,
     pub name: String,
@@ -146,6 +147,7 @@ impl MfH264Encoder {
                 output_size: info.cbSize.max(4 * 1024 * 1024),
                 need_input: 0,
                 pending: VecDeque::new(),
+                force_keyframe: false,
                 frame_duration: s.frame_duration(),
                 draining: false,
                 name,
@@ -173,9 +175,32 @@ impl MfH264Encoder {
                 sample.AddBuffer(&buf)?;
                 sample.SetSampleTime(pts)?;
                 sample.SetSampleDuration(self.frame_duration)?;
+                if self.force_keyframe {
+                    let result = self
+                        .transform
+                        .cast::<ICodecAPI>()
+                        .and_then(|api| api.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &variant_u32(1)));
+                    if let Err(error) = result {
+                        tracing::warn!("MF: запрос ключевого кадра отклонён, ожидаем GOP: {error}");
+                    }
+                }
                 self.transform.ProcessInput(0, &sample, 0)?;
+                self.force_keyframe = false;
             }
             self.need_input -= 1;
+        }
+        Ok(())
+    }
+
+    pub fn request_keyframe(&mut self) {
+        self.force_keyframe = true;
+    }
+
+    pub fn set_bitrate(&mut self, kbps: u32) -> Result<(), EncodeError> {
+        let api = self.transform.cast::<ICodecAPI>()?;
+        // SAFETY: codec belongs to this thread; a VT_UI4 contains bits per second.
+        unsafe {
+            api.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &variant_u32(kbps.saturating_mul(1000)))?;
         }
         Ok(())
     }

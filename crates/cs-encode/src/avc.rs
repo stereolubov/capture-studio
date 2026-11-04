@@ -36,6 +36,11 @@ pub fn nal_type(nal: &[u8]) -> u8 {
     nal.first().map_or(0, |b| b & 0x1F)
 }
 
+/// True random access point, rather than an encoder's generic I-frame/clean-point flag.
+pub fn is_idr(data: &[u8]) -> bool {
+    annexb_nals(data).iter().any(|nal| nal_type(nal) == 5)
+}
+
 /// Annex B → NAL с 4-байтовыми длинами (формат MKV/MP4).
 pub fn annexb_to_length_prefixed(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() + 16);
@@ -98,6 +103,14 @@ mod tests {
         assert_eq!(nal_type(n[1]), 8);
         assert_eq!(nal_type(n[2]), 5);
         assert_eq!(n[2], &[0x65, 0x88, 0x84, 0x00]);
+    }
+
+    #[test]
+    fn recovery_requires_idr_not_a_non_idr_slice() {
+        assert!(is_idr(STREAM));
+        assert!(!is_idr(&[0, 0, 1, 0x41, 0x88]));
+        assert!(!is_idr(&[0, 0, 0, 1, 0x67, 0x64]));
+        assert!(!is_idr(&[]));
     }
 
     #[test]

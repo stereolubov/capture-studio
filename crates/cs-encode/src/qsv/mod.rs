@@ -73,6 +73,7 @@ struct Api {
     sync: MFXVideoCORE_SyncOperationFn,
     query_io_surf: MFXVideoENCODE_QueryIOSurfFn,
     init: MFXVideoENCODE_InitFn,
+    reset: MFXVideoENCODE_ResetFn,
     encode_close: MFXVideoENCODE_CloseFn,
     get_video_param: MFXVideoENCODE_GetVideoParamFn,
     encode: MFXVideoENCODE_EncodeFrameAsyncFn,
@@ -117,6 +118,7 @@ fn load() -> Result<Api, EncodeError> {
             sync: sym!(MFXVideoCORE_SyncOperationFn, "MFXVideoCORE_SyncOperation"),
             query_io_surf: sym!(MFXVideoENCODE_QueryIOSurfFn, "MFXVideoENCODE_QueryIOSurf"),
             init: sym!(MFXVideoENCODE_InitFn, "MFXVideoENCODE_Init"),
+            reset: sym!(MFXVideoENCODE_ResetFn, "MFXVideoENCODE_Reset"),
             encode_close: sym!(MFXVideoENCODE_CloseFn, "MFXVideoENCODE_Close"),
             get_video_param: sym!(MFXVideoENCODE_GetVideoParamFn, "MFXVideoENCODE_GetVideoParam"),
             encode: sym!(MFXVideoENCODE_EncodeFrameAsyncFn, "MFXVideoENCODE_EncodeFrameAsync"),
@@ -184,6 +186,7 @@ pub struct QsvEncoder {
     /// Слоты с задачами по порядку подачи.
     in_flight: VecDeque<usize>,
     queued: VecDeque<(ID3D11Texture2D, i64)>,
+    force_keyframe: bool,
     /// Времена поданных кадров по порядку подачи: из них — время декодирования пакетов.
     input_pts: VecDeque<i64>,
     dts_shift: i64,
@@ -228,6 +231,7 @@ impl QsvEncoder {
                 slots: Vec::new(),
                 in_flight: VecDeque::new(),
                 queued: VecDeque::new(),
+                force_keyframe: false,
                 input_pts: VecDeque::new(),
                 dts_shift: 0,
                 name: String::new(),
@@ -446,6 +450,38 @@ impl QsvEncoder {
         Ok(None)
     }
 
+    /// Force the next accepted input to an IDR, preserving the request while the device is busy.
+    pub fn request_keyframe(&mut self) {
+        self.force_keyframe = true;
+    }
+
+    pub fn set_bitrate(&mut self, kbps: u32, out: &mut Vec<Packet>) -> Result<(), EncodeError> {
+        // Complete submitted tasks, without sending EOS or replacing the session.
+        self.collect(out, true)?;
+        // SAFETY: GetVideoParam fills POD encoding settings; only CBR bitrate fields change.
+        unsafe {
+            let mut params: mfxVideoParam = std::mem::zeroed();
+            let r = (self.api.get_video_param)(self.session, &mut params);
+            if r < 0 {
+                return Err(Self::fail("параметры битрейта QSV", r));
+            }
+            let m = &mut params.__bindgen_anon_1.mfx;
+            let e = &mut m.__bindgen_anon_1.__bindgen_anon_1;
+            if e.RateControlMethod != MFX_RATECONTROL_CBR as u16 {
+                return Err(EncodeError::Failed("динамический битрейт QSV требует CBR".into()));
+            }
+            let mult = kbps.div_ceil(u32::from(u16::MAX)).max(1);
+            m.BRCParamMultiplier = mult as u16;
+            e.__bindgen_anon_2.TargetKbps = (kbps / mult) as u16;
+            e.__bindgen_anon_3.MaxKbps = (kbps / mult) as u16;
+            let r = (self.api.reset)(self.session, &mut params);
+            if r < 0 {
+                return Err(Self::fail("изменение битрейта QSV", r));
+            }
+        }
+        Ok(())
+    }
+
     /// Подаёт поверхность (`None` — конец потока). `false` — энкодер выдал всё (при `None`).
     fn encode(&mut self, surface: Option<usize>, out: &mut Vec<Packet>) -> Result<bool, EncodeError> {
         loop {
@@ -462,8 +498,16 @@ impl QsvEncoder {
             sl.bs.DataOffset = 0;
             sl.bs.DataLength = 0;
             let mut sync: mfxSyncPoint = std::ptr::null_mut();
+            // SAFETY: zeroed control has no extensions; FrameType is filled below.
+            let mut control: mfxEncodeCtrl = unsafe { std::mem::zeroed() };
+            let force = self.force_keyframe && surface.is_some();
+            control.FrameType = (MFX_FRAMETYPE_I | MFX_FRAMETYPE_IDR | MFX_FRAMETYPE_REF) as u16;
+            let control_ptr = if force { &mut control } else { std::ptr::null_mut() };
             // SAFETY: поверхность и буфер живут в `self` до получения пакета.
-            let r = unsafe { (self.api.encode)(self.session, std::ptr::null_mut(), surf, &mut sl.bs, &mut sync) };
+            let r = unsafe { (self.api.encode)(self.session, control_ptr, surf, &mut sl.bs, &mut sync) };
+            if force && r != MFX_WRN_DEVICE_BUSY && (r >= MFX_ERR_NONE || r == MFX_ERR_MORE_DATA) {
+                self.force_keyframe = false;
+            }
             match r {
                 MFX_WRN_DEVICE_BUSY => {
                     if self.in_flight.is_empty() {

@@ -187,6 +187,32 @@ impl VideoEncoder {
         }
     }
 
+    /// Requests an IDR on the next accepted input; call on the encoder's owning thread.
+    /// MF drivers may reject this; periodic GOP is the fallback.
+    pub fn request_keyframe(&mut self) {
+        match self {
+            Self::Mf(e) => e.request_keyframe(),
+            Self::Nvenc(e) => e.request_keyframe(),
+            Self::Amf(e) => e.request_keyframe(),
+            Self::Qsv(e) => e.request_keyframe(),
+            Self::Software(e) => e.request_keyframe(),
+        }
+    }
+
+    /// Changes the CBR target without replacing the encoder. QSV may return pending packets.
+    pub fn set_bitrate(&mut self, kbps: u32, out: &mut Vec<Packet>) -> Result<(), EncodeError> {
+        if !(100..=1_000_000).contains(&kbps) {
+            return Err(EncodeError::Failed("недопустимый битрейт".into()));
+        }
+        match self {
+            Self::Nvenc(e) => e.set_bitrate(kbps),
+            Self::Mf(e) => e.set_bitrate(kbps),
+            Self::Amf(e) => e.set_bitrate(kbps),
+            Self::Qsv(e) => e.set_bitrate(kbps, out),
+            Self::Software(e) => e.set_bitrate(kbps),
+        }
+    }
+
     pub fn drain(&mut self, out: &mut Vec<Packet>) -> Result<(), EncodeError> {
         match self {
             Self::Mf(e) => e.drain(out),

@@ -204,6 +204,7 @@ pub struct OpenH264Encoder {
     /// Кадр I420: Y, затем U и V.
     i420: Vec<u8>,
     queued: VecDeque<(ID3D11Texture2D, i64)>,
+    force_keyframe: bool,
     pub name: String,
     pub dropped: u64,
 }
@@ -252,6 +253,7 @@ impl OpenH264Encoder {
                 height: h,
                 i420: vec![0; w * h * 3 / 2],
                 queued: VecDeque::new(),
+                force_keyframe: false,
                 name: format!("OpenH264 {VERSION} (CPU)"),
                 dropped: 0,
             };
@@ -327,11 +329,40 @@ impl OpenH264Encoder {
         Ok(())
     }
 
+    pub fn request_keyframe(&mut self) {
+        self.force_keyframe = true;
+    }
+
+    pub fn set_bitrate(&mut self, kbps: u32) -> Result<(), EncodeError> {
+        let mut bitrate = openh264_sys2::SBitrateInfo {
+            iLayer: openh264_sys2::SPATIAL_LAYER_ALL,
+            iBitrate: kbps.saturating_mul(1000) as i32,
+        };
+        // SAFETY: live encoder and SBitrateInfo matching ENCODER_OPTION_BITRATE, synchronous call.
+        let result = unsafe {
+            let set = (**self.encoder).SetOption.ok_or_else(|| EncodeError::Failed("OpenH264 без SetOption".into()))?;
+            set(self.encoder, openh264_sys2::ENCODER_OPTION_BITRATE, (&raw mut bitrate).cast())
+        };
+        if result != 0 {
+            return Err(EncodeError::Failed(format!("изменение битрейта OpenH264: код {result}")));
+        }
+        Ok(())
+    }
+
     fn encode(&mut self, pts: i64, out: &mut Vec<Packet>) -> Result<(), EncodeError> {
         let (w, h) = (self.width, self.height);
         // SAFETY: картинка ссылается на `self.i420` до возврата EncodeFrame; NAL-блоки
         // копируются до следующего вызова (буфер принадлежит энкодеру).
         unsafe {
+            if self.force_keyframe {
+                let force = (**self.encoder)
+                    .ForceIntraFrame
+                    .ok_or_else(|| EncodeError::Failed("OpenH264 без ForceIntraFrame".into()))?;
+                let result = force(self.encoder, true);
+                if result != 0 {
+                    return Err(EncodeError::Failed(format!("запрос IDR OpenH264: код {result}")));
+                }
+            }
             let mut pic: openh264_sys2::SSourcePicture = std::mem::zeroed();
             pic.iColorFormat = openh264_sys2::videoFormatI420;
             pic.iPicWidth = w as i32;
@@ -348,8 +379,10 @@ impl OpenH264Encoder {
                 return Err(EncodeError::Failed(format!("кодирование OpenH264: код {r}")));
             }
             if info.eFrameType == openh264_sys2::videoFrameTypeSkip {
+                self.dropped += 1;
                 return Ok(());
             }
+            self.force_keyframe = false;
             let mut data = Vec::with_capacity(info.iFrameSizeInBytes.max(0) as usize);
             for layer in &info.sLayerInfo[..info.iLayerNum.clamp(0, 128) as usize] {
                 let lens = std::slice::from_raw_parts(layer.pNalLengthInByte, layer.iNalCount.max(0) as usize);
@@ -392,15 +425,18 @@ fn fill_params(p: &mut openh264_sys2::SEncParamExt, s: &VideoSettings, opts: &En
         _ => bps * 3 / 2,
     };
     match s.rate_control {
-        RateControl::Cbr | RateControl::Vbr => p.iRCMode = openh264_sys2::RC_BITRATE_MODE,
+        RateControl::Cbr | RateControl::Vbr => {
+            p.iRCMode = openh264_sys2::RC_BITRATE_MODE;
+        }
         RateControl::Cqp(q) => {
             let q = q.clamp(1, 51) as i32;
             p.iRCMode = openh264_sys2::RC_OFF_MODE;
             (p.iMinQp, p.iMaxQp) = (q, q);
         }
     }
-    // Пропуск кадров ломает равномерность записи: лучше превысить битрейт.
-    p.bEnableFrameSkip = false;
+    // OpenH264 requires frame skipping for effective bitrate control. Recording keeps every
+    // frame; low-latency streaming may skip frames rather than exceed the network budget.
+    p.bEnableFrameSkip = opts.low_latency && !matches!(s.rate_control, RateControl::Cqp(_));
     p.uiIntraPeriod = s.gop();
     p.eSpsPpsIdStrategy = openh264_sys2::CONSTANT_ID;
     p.iComplexityMode = match opts.preset.clamp(1, 7) {

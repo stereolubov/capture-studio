@@ -9474,6 +9474,7 @@ pub const NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER: u32 = struct_version(1);
 pub const NV_ENC_CAPS_PARAM_VER: u32 = struct_version(1);
 pub const NV_ENC_CONFIG_VER: u32 = struct_version(8) | (1 << 31);
 pub const NV_ENC_INITIALIZE_PARAMS_VER: u32 = struct_version(5) | (1 << 31);
+pub const NV_ENC_RECONFIGURE_PARAMS_VER: u32 = struct_version(1) | (1 << 31);
 pub const NV_ENC_PRESET_CONFIG_VER: u32 = struct_version(4) | (1 << 31);
 pub const NV_ENC_PIC_PARAMS_VER: u32 = struct_version(6) | (1 << 31);
 pub const NV_ENC_CREATE_BITSTREAM_BUFFER_VER: u32 = struct_version(1);

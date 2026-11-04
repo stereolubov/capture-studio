@@ -3379,6 +3379,7 @@ pub type MFXVideoCORE_SyncOperationFn = unsafe extern "C" fn(mfxSession, mfxSync
 pub type MFXVideoENCODE_QueryIOSurfFn =
     unsafe extern "C" fn(mfxSession, *mut mfxVideoParam, *mut mfxFrameAllocRequest) -> mfxStatus;
 pub type MFXVideoENCODE_InitFn = unsafe extern "C" fn(mfxSession, *mut mfxVideoParam) -> mfxStatus;
+pub type MFXVideoENCODE_ResetFn = unsafe extern "C" fn(mfxSession, *mut mfxVideoParam) -> mfxStatus;
 pub type MFXVideoENCODE_CloseFn = unsafe extern "C" fn(mfxSession) -> mfxStatus;
 pub type MFXVideoENCODE_GetVideoParamFn = unsafe extern "C" fn(mfxSession, *mut mfxVideoParam) -> mfxStatus;
 pub type MFXVideoENCODE_EncodeFrameAsyncFn = unsafe extern "C" fn(

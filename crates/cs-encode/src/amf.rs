@@ -292,6 +292,7 @@ pub struct AmfEncoder {
     _lib: Library,
     in_flight: VecDeque<InFlight>,
     queued: VecDeque<(ID3D11Texture2D, i64)>,
+    force_keyframe: bool,
     depth: usize,
     /// Сдвиг времени декодирования (кадр при B-кадрах, иначе 0).
     dts_shift: i64,
@@ -363,6 +364,7 @@ impl AmfEncoder {
                 _lib: lib,
                 in_flight: VecDeque::new(),
                 queued: VecDeque::new(),
+                force_keyframe: false,
                 depth: pipeline_depth(opts),
                 dts_shift: 0,
                 draining: false,
@@ -489,8 +491,20 @@ impl AmfEncoder {
         Ok(false)
     }
 
+    pub fn request_keyframe(&mut self) {
+        self.force_keyframe = true;
+    }
+
+    pub fn set_bitrate(&mut self, kbps: u32) -> Result<(), EncodeError> {
+        let r = self.set(w!("TargetBitrate"), Variant::int(i64::from(kbps) * 1000));
+        if r != AMF_OK {
+            return Err(EncodeError::Failed(format!("изменение битрейта AMF: {}", result_text(r))));
+        }
+        Ok(())
+    }
+
     /// `false` — энкодер пока не принимает кадр.
-    fn submit(&self, tex: &ID3D11Texture2D, pts: i64) -> Result<bool, EncodeError> {
+    fn submit(&mut self, tex: &ID3D11Texture2D, pts: i64) -> Result<bool, EncodeError> {
         let (ctx, comp) = (self.context.raw(), self.encoder.raw());
         // SAFETY: поверхность создаётся из NV12-текстуры устройства контекста; своя ссылка на
         // поверхность освобождается после подачи (энкодер держит свою).
@@ -507,8 +521,24 @@ impl AmfEncoder {
                 return Err(EncodeError::Failed(format!("поверхность AMF: {}", result_text(r))));
             }
             (vt::<DataVtbl>(surf.raw()).set_pts)(surf.raw(), pts);
+            if self.force_keyframe {
+                // AMF per-frame properties belong to the input surface, not the component.
+                for (name, value) in [
+                    (w!("ForcePictureType"), Variant::int(2)),
+                    (w!("InsertSPS"), Variant::boolean(true)),
+                    (w!("InsertPPS"), Variant::boolean(true)),
+                ] {
+                    let r = (vt::<StorageVtbl>(surf.raw()).set_property)(surf.raw(), name, value);
+                    if r != AMF_OK {
+                        return Err(EncodeError::Failed(format!("запрос IDR AMF: {}", result_text(r))));
+                    }
+                }
+            }
             match (vt::<ComponentVtbl>(comp).submit_input)(comp, surf.raw()) {
-                AMF_OK | AMF_NEED_MORE_INPUT => Ok(true),
+                AMF_OK | AMF_NEED_MORE_INPUT => {
+                    self.force_keyframe = false;
+                    Ok(true)
+                }
                 AMF_INPUT_FULL => Ok(false),
                 r => Err(EncodeError::Failed(format!("подача кадра AMF: {}", result_text(r)))),
             }
