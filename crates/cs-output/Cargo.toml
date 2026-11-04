@@ -13,3 +13,6 @@ workspace = true
 [dependencies]
 thiserror.workspace = true
 cs-core.workspace = true
+native-tls = "0.2"
+url = "2"
+getrandom = "0.4"

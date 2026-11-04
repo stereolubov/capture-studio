@@ -1,11 +1,15 @@
 //! Выводы (§10): мультиплексоры MKV/MP4/fMP4/FLV, RTMP(S), ремукс, менеджер выводов.
-//! M2: MKV, фрагментированный MP4 (запись), ремукс MKV → MP4, интерливер потоков; RTMP — M3.
+//! M2: MKV, фрагментированный MP4, ремукс и интерливер. M3: FLV, RTMP framing/handshake;
+//! подключение публикации и сетевого транспорта ещё в работе.
 
+pub mod bitrate;
+pub mod flv;
 pub mod fmp4;
 pub mod interleave;
 pub mod mkv;
 pub mod mkv_read;
 pub mod mp4;
+pub mod rtmp;
 
 /// Политика переподключения (§10.2): до 25 попыток, задержка 2, 4, 8… максимум 30 с.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
